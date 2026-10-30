@@ -195,6 +195,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             setOnCheckedChangeListener { _, _ -> rerender() }
         }
         infoRow.addView(hexBox)
+        infoRow.addView(smallButton("Копировать") { copyLogs() })
         counterView = TextView(this).apply {
             textSize = 12f
             setPadding(dp(12), 0, 0, 0)
@@ -429,52 +430,128 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         rawOut = null
     }
 
-    /** Отправляет последний сырой лог (.bin) и его HEX-дамп (.txt), например в WhatsApp или почту. */
-    private fun shareLogs() {
-        val raw = rawFile ?: logDir().listFiles()?.filter { it.name.endsWith(".bin") }
+    /** Чистое декодирование (без состояния экрана) — для отчёта и буфера обмена. */
+    private fun decodeText(bytes: ByteArray, enc: Int): String {
+        val sb = StringBuilder(bytes.size + 64)
+        var cr = false
+        for (b in bytes) {
+            val c = b.toInt() and 0xFF
+            when {
+                c == 0x0D -> { sb.append('\n'); cr = true; continue }
+                c == 0x0A -> { if (!cr) sb.append('\n') }
+                c == 0x0C -> sb.append("\n---- новая страница ----\n")
+                c == 0x09 -> sb.append('\t')
+                enc == 1 && c in 0x60..0x7A -> sb.append((0x05D0 + (c - 0x60)).toChar())
+                enc == 2 && c in 0x80..0x9A -> sb.append((0x05D0 + (c - 0x80)).toChar())
+                c in 0x20..0x7E -> sb.append(c.toChar())
+                else -> sb.append(String.format("[%02X]", c))
+            }
+            cr = false
+        }
+        return sb.toString()
+    }
+
+    private fun hexDump(bytes: ByteArray): String {
+        val sb = StringBuilder(bytes.size * 4 + 64)
+        var i = 0
+        while (i < bytes.size) {
+            val end = minOf(i + 16, bytes.size)
+            sb.append(String.format("%08X  ", i))
+            for (j in i until i + 16) {
+                if (j < end) sb.append(String.format("%02X ", bytes[j].toInt() and 0xFF)) else sb.append("   ")
+            }
+            sb.append(" |")
+            for (j in i until end) {
+                val c = bytes[j].toInt() and 0xFF
+                sb.append(if (c in 0x20..0x7E) c.toChar() else '.')
+            }
+            sb.append("|\n")
+            i = end
+        }
+        return sb.toString()
+    }
+
+    private fun latestRawFile(): File? {
+        try { rawOut?.flush() } catch (_: Exception) {}
+        val f = rawFile ?: logDir().listFiles()?.filter { it.name.endsWith(".bin") }
             ?.maxByOrNull { it.lastModified() }
-        if (raw == null || !raw.exists() || raw.length() == 0L) {
+        return if (f != null && f.exists() && f.length() > 0L) f else null
+    }
+
+    /**
+     * Один текстовый файл «для Claude»: заголовок, расшифровка и полный HEX-дамп
+     * (HEX без потерь — по нему восстанавливаются исходные байты).
+     * Текстовый файл принимает приложение Claude через «Поделиться».
+     */
+    private fun buildReport(raw: File): File {
+        val bytes = raw.readBytes()
+        val enc = encSpinner.selectedItemPosition
+        val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val sb = StringBuilder()
+        sb.append("=== Panel Log 3030: лог принтерного порта NFS2-3030 ===\n")
+        sb.append("Файл: ").append(raw.name).append('\n')
+        sb.append("Создан отчёт: ").append(now).append('\n')
+        sb.append("Скорость: ").append(selectedBaud()).append(" 8N1\n")
+        sb.append("Байт: ").append(bytes.size).append('\n')
+        sb.append("Кодировка расшифровки: ").append(ENCODINGS[enc]).append('\n')
+        sb.append("Версия приложения: ").append(appVersion()).append("\n\n")
+        sb.append("=== РАСШИФРОВКА ===\n")
+        sb.append(decodeText(bytes, enc)).append("\n\n")
+        sb.append("=== HEX (сырые байты) ===\n")
+        sb.append(hexDump(bytes))
+        val out = File(logDir(), raw.nameWithoutExtension.replace("panel_raw_", "panel_log_") + ".txt")
+        out.writeText(sb.toString())
+        return out
+    }
+
+    private fun appVersion(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (_: Exception) { "?" }
+
+    /** «Отправить»: один .txt файл — удобно поделиться прямо в чат с Claude, WhatsApp или почту. */
+    private fun shareLogs() {
+        val raw = latestRawFile()
+        if (raw == null) {
             Toast.makeText(this, "Лог пока пустой", Toast.LENGTH_SHORT).show()
             return
         }
-        try { rawOut?.flush() } catch (_: Exception) {}
-
-        val dump = File(logDir(), raw.nameWithoutExtension + "_hex.txt")
-        try {
-            val bytes = raw.readBytes()
-            val sb = StringBuilder()
-            var i = 0
-            while (i < bytes.size) {
-                val end = minOf(i + 16, bytes.size)
-                sb.append(String.format("%08X  ", i))
-                for (j in i until i + 16) {
-                    if (j < end) sb.append(String.format("%02X ", bytes[j].toInt() and 0xFF)) else sb.append("   ")
-                }
-                sb.append(" |")
-                for (j in i until end) {
-                    val c = bytes[j].toInt() and 0xFF
-                    sb.append(if (c in 0x20..0x7E) c.toChar() else '.')
-                }
-                sb.append("|\n")
-                i = end
-            }
-            dump.writeText(sb.toString())
-        } catch (e: Exception) {
+        val report = try { buildReport(raw) } catch (e: Exception) {
             Toast.makeText(this, "Ошибка подготовки файла: ${e.message}", Toast.LENGTH_LONG).show()
             return
         }
-
-        val authority = "$packageName.files"
-        val uris = arrayListOf<Uri>(
-            FileProvider.getUriForFile(this, authority, raw),
-            FileProvider.getUriForFile(this, authority, dump)
-        )
-        val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-            type = "*/*"
-            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-            putExtra(Intent.EXTRA_SUBJECT, "Лог NFS2-3030 ${raw.name}")
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", report)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Лог NFS2-3030 ${report.name}")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivity(Intent.createChooser(send, "Отправить лог"))
+    }
+
+    /** «Копировать»: текст в буфер обмена — вставить в чат одним нажатием. */
+    private fun copyLogs() {
+        val raw = latestRawFile()
+        if (raw == null) {
+            Toast.makeText(this, "Лог пока пустой", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val bytes = raw.readBytes()
+        val enc = encSpinner.selectedItemPosition
+        val sb = StringBuilder()
+        sb.append("Лог NFS2-3030, ").append(raw.name).append(", ").append(bytes.size).append(" байт, ")
+            .append(selectedBaud()).append(" 8N1, ").append(ENCODINGS[enc]).append("\n\n")
+        sb.append(decodeText(bytes, enc))
+        if (bytes.size <= 8_000) sb.append("\n\nHEX:\n").append(hexDump(bytes))
+        var text = sb.toString()
+        var cut = false
+        if (text.length > 100_000) { text = text.substring(0, 100_000); cut = true }
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("Лог NFS2-3030", text))
+        Toast.makeText(
+            this,
+            if (cut) "Скопировано начало лога (он большой — лучше «Отправить» файлом)" else "Лог скопирован — вставьте его в чат",
+            Toast.LENGTH_LONG
+        ).show()
     }
 }
