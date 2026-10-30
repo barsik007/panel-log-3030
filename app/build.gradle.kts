@@ -11,8 +11,20 @@ android {
         applicationId = "com.panellog.app"
         minSdk = 21
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1-prototype"
+        val run = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionCode = run
+        versionName = "0.1.$run"
+    }
+
+    // Постоянный ключ подписи: без него каждая сборка на GitHub получала бы
+    // новый ключ, и обновление поверх старой версии не устанавливалось бы.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("panellog.keystore")
+            storePassword = "panellog"
+            keyAlias = "panellog"
+            keyPassword = "panellog"
+        }
     }
 
     buildTypes {
