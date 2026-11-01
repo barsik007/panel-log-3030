@@ -31,6 +31,13 @@ object ReportExport {
         return if (ru != null) "${e.problem} ($ru)" else e.problem
     }
 
+    private fun typeText(e: PanelDecoder.PanelEvent, he: Boolean): String {
+        if (e.devType.isEmpty()) return ""
+        val h = PanelDecoder.typeHe(e.devType)
+        val r = PanelDecoder.typeRu(e.devType)
+        return if (he || r == null) h else "$h ($r)"
+    }
+
     private fun place(e: PanelDecoder.PanelEvent): String =
         listOf(e.label, e.label2).filter { it.isNotEmpty() }.joinToString(" · ")
 
@@ -50,7 +57,10 @@ object ReportExport {
         if (dev.isNotEmpty()) {
             sb.append(if (he) "*התקנים (" else "*Устройства (").append(dev.size).append("):*\n")
             dev.forEachIndexed { i, e ->
-                sb.append(i + 1).append(". ").append(e.address).append(" — ").append(problemLine(e, he)).append('\n')
+                sb.append(i + 1).append(". ").append(e.address)
+                val t = typeText(e, he)
+                if (t.isNotEmpty()) sb.append(" · ").append(t)
+                sb.append(" — ").append(problemLine(e, he)).append('\n')
                 val p = place(e)
                 if (p.isNotEmpty()) sb.append("    ").append(p).append('\n')
             }
@@ -77,9 +87,9 @@ object ReportExport {
         val headFill = Paint().apply { color = Color.rgb(232, 234, 237); style = Paint.Style.FILL }
 
         // Колонки слева направо; для отчёта на иврите порядок зеркальный (# справа).
-        val baseWidths = intArrayOf(22, 70, 150, 190, 91) // сумма 523 = 595 - 2*36
-        val baseHeaders = if (he) arrayOf("#", "כתובת", "תקלה", "מיקום", "זמן")
-            else arrayOf("#", "כתובת\nАдрес", "תקלה\nНеисправность", "מיקום\nМесто", "זמן\nВремя")
+        val baseWidths = intArrayOf(20, 58, 88, 112, 170, 75) // сумма 523 = 595 - 2*36
+        val baseHeaders = if (he) arrayOf("#", "כתובת", "סוג", "תקלה", "מיקום", "זמן")
+            else arrayOf("#", "כתובת\nАдрес", "סוג\nТип", "תקלה\nНеисправность", "מיקום\nМесто", "זמן\nВремя")
         val widths = if (he) baseWidths.reversedArray() else baseWidths
         val headers = if (he) baseHeaders.reversedArray() else baseHeaders
         val pad = 4f
@@ -134,12 +144,16 @@ object ReportExport {
             val texts = listOf(
                 (i + 1).toString(),
                 if (e.isSystem) "—" else e.address + (if (e.zone.isNotEmpty()) "\n" + e.zone else ""),
+                if (e.isSystem) (if (he) "מערכת" else "מערכת\nсистема") else {
+                    val h = PanelDecoder.typeHe(e.devType); val r = PanelDecoder.typeRu(e.devType)
+                    if (he || r == null) h else "$h\n$r"
+                },
                 e.problem + (if (he) "" else PanelDecoder.ru(e.problem)?.let { "\n$it" } ?: ""),
                 if (e.isSystem) (e.node.ifEmpty { if (he) "מערכת" else "Система" }) else place(e).ifEmpty { "—" },
                 e.date + "\n" + e.time
             )
-            val paints = listOf(cellPaint, monoPaint, cellPaint, cellPaint, cellPaint)
-            val order = if (he) listOf(4, 3, 2, 1, 0) else listOf(0, 1, 2, 3, 4)
+            val paints = listOf(cellPaint, monoPaint, cellPaint, cellPaint, cellPaint, cellPaint)
+            val order = if (he) listOf(5, 4, 3, 2, 1, 0) else listOf(0, 1, 2, 3, 4, 5)
             val cells = order.mapIndexed { col, k -> layout(texts[k], paints[k], widths[col]) }
             val h = cells.maxOf { it.height } + 2 * pad
             if (y + h > pageH - margin - 16) newPage()

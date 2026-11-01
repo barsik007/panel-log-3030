@@ -444,7 +444,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             } else {
                 sb.append(n).append(e.address)
                 if (e.zone.isNotEmpty()) sb.append(" · ").append(e.zone)
-                if (e.devType.isNotEmpty()) sb.append(" · ").append(PanelDecoder.ru(e.devType) ?: e.devType)
+                if (e.devType.isNotEmpty()) sb.append(" · ").append(PanelDecoder.typeRu(e.devType) ?: e.devType)
                 sb.append('\n')
             }
             sb.append("   ").append(e.problem)

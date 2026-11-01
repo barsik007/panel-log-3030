@@ -259,6 +259,24 @@ object PanelDecoder {
         "(ION) עשן" to "дымовой ионизационный"
     )
 
+    /** Тип устройства, как он напечатан → понятное название (иврит, русский). */
+    private val TYPES: Map<String, Pair<String, String>> = mapOf(
+        "(עשן) פוטו" to ("גלאי עשן אופטי" to "дымовой оптический"),
+        "עשן (פוטו)" to ("גלאי עשן אופטי" to "дымовой оптический"),
+        "(ION) עשן" to ("גלאי עשן יוני" to "дымовой ионизационный"),
+        "עשן (ION)" to ("גלאי עשן יוני" to "дымовой ионизационный"),
+        "חום" to ("גלאי חום" to "тепловой"),
+        "MONITOR" to ("מודול ניטור" to "монитор-модуль"),
+        "TROUBLE MON" to ("מודול ניטור תקלה" to "модуль контроля неисправности"),
+        "SMOKE CONVEN" to ("מודול גלאים קונבנציונליים" to "модуль неадресных датчиков"),
+        "CONTROL" to ("מודול שליטה" to "модуль управления"),
+        "RELAY" to ("ממסר" to "реле"),
+        "PULL STATION" to ("לחצן אש" to "ручной извещатель")
+    )
+
+    fun typeHe(t: String): String = TYPES[t]?.first ?: t
+    fun typeRu(t: String): String? = TYPES[t]?.second
+
     fun ru(s: String): String? {
         RU[s]?.let { return it }
         Regex("תקלת הארקה בעניבה (\\d+)").find(s)?.let { return "замыкание на землю, шлейф " + it.groupValues[1] }
