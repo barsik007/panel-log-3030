@@ -22,15 +22,17 @@ jobs:
           gradle-version: "8.9"
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk PanelLog3030-${{ github.run_number }}.apk
+      - name: Rename APKs
+        run: |
+          cp app/build/outputs/apk/simple/debug/app-simple-debug.apk G1-Hotelo-${{ github.run_number }}.apk
+          cp app/build/outputs/apk/pro/debug/app-pro-debug.apk G1-Hotelo-Pro-${{ github.run_number }}.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: PanelLog3030-apk
-          path: PanelLog3030-*.apk
+          name: G1-Hotelo-apk
+          path: G1-Hotelo*.apk
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Panel Log 3030 — сборка ${{ github.run_number }}
-          files: PanelLog3030-*.apk
+          name: G1 Hotelo — сборка ${{ github.run_number }}
+          files: G1-Hotelo*.apk

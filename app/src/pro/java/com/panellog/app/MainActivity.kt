@@ -169,7 +169,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun go(s: Scr) { scr = s; render() }
 
     private fun render() {
-        title = "G1 Hotelo"
+        title = getString(R.string.app_name)
         faultListBox = null
         captureStatusView = null; captureCounterView = null; capturePreview = null; captureConnectBtn = null
         val v = when (scr) {

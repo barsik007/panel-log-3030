@@ -27,6 +27,22 @@ android {
         }
     }
 
+    // Две программы из одного кода:
+    //  simple — «G1 Hotelo»: снять ошибки, отправить/скачать (com.panellog.app)
+    //  pro    — «G1 Hotelo Pro»: объекты, история, сравнение, карточки (com.panellog.app.pro)
+    flavorDimensions += "edition"
+    productFlavors {
+        create("simple") {
+            dimension = "edition"
+            resValue("string", "app_name", "G1 Hotelo")
+        }
+        create("pro") {
+            dimension = "edition"
+            applicationIdSuffix = ".pro"
+            resValue("string", "app_name", "G1 Hotelo Pro")
+        }
+    }
+
     buildTypes {
         release { isMinifyEnabled = false }
     }
