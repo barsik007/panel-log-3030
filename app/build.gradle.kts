@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.panellog.app"
-        minSdk = 21
+        minSdk = 23
         targetSdk = 34
         val run = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
         versionCode = run

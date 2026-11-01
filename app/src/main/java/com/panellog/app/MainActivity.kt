@@ -189,7 +189,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         buttonsRow.addView(connectButton, weighted())
         buttonsRow.addView(smallButton("Тест TX") { sendTest() }, weighted())
         buttonsRow.addView(smallButton("Очистить") { clearScreen() }, weighted())
-        buttonsRow.addView(smallButton("Отправить") { shareLogs() }, weighted())
+        buttonsRow.addView(smallButton("Отправить") { shareMenu() }, weighted())
         root.addView(buttonsRow)
 
         val infoRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -589,7 +589,73 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
     } catch (_: Exception) { "?" }
 
-    /** «Отправить»: один .txt файл — удобно поделиться прямо в чат с Claude, WhatsApp или почту. */
+    /** События из текущего сеанса, а если он пуст — из последнего сохранённого лога. */
+    private fun currentEvents(): List<PanelDecoder.PanelEvent> {
+        val bytes = if (sessionBytes.size() > 0) sessionBytes.toByteArray()
+            else latestRawFile()?.readBytes() ?: ByteArray(0)
+        val d = PanelDecoder.decode(bytes)
+        return if (d.graphic) PanelDecoder.parse(d.visualLines) else emptyList()
+    }
+
+    private fun shareMenu() {
+        val items = arrayOf("Список ошибок в WhatsApp", "PDF-отчёт", "Файл лога (для Claude)")
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Отправить")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> shareWhatsapp()
+                    1 -> sharePdf()
+                    else -> shareLogs()
+                }
+            }
+            .show()
+    }
+
+    private fun shareWhatsapp() {
+        val events = currentEvents()
+        if (events.isEmpty()) {
+            Toast.makeText(this, "Нет разобранных событий — сначала снимите лог с панели", Toast.LENGTH_LONG).show()
+            return
+        }
+        val text = ReportExport.whatsappText(events)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        val wa = Intent(send).setPackage("com.whatsapp")
+        try {
+            if (wa.resolveActivity(packageManager) != null) startActivity(wa)
+            else startActivity(Intent.createChooser(send, "Отправить список"))
+        } catch (_: Exception) {
+            startActivity(Intent.createChooser(send, "Отправить список"))
+        }
+    }
+
+    private fun sharePdf() {
+        val events = currentEvents()
+        if (events.isEmpty()) {
+            Toast.makeText(this, "Нет разобранных событий — сначала снимите лог с панели", Toast.LENGTH_LONG).show()
+            return
+        }
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+        val out = File(logDir(), "panel_report_$stamp.pdf")
+        try {
+            ReportExport.writePdf(events, out)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", out)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Отчёт о неисправностях ${out.name}")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(send, "Отправить PDF"))
+    }
+
+    /** Файл лога: один .txt — удобно поделиться прямо в чат с Claude. */
     private fun shareLogs() {
         val raw = latestRawFile()
         if (raw == null) {
