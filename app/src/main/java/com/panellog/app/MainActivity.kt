@@ -53,6 +53,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         private const val MAX_SCREEN_CHARS = 300_000
         private val BAUDS = intArrayOf(300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200)
         private val ENCODINGS = arrayOf(
+            "Авто: разбор панели",
             "Текст (ASCII)",
             "Иврит SI-960 (7 бит)",
             "Иврит CP862 (DOS)"
@@ -68,6 +69,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private lateinit var baudSpinner: Spinner
     private lateinit var encSpinner: Spinner
     private lateinit var hexBox: CheckBox
+    private lateinit var paperBox: CheckBox
+    private val renderRunnable = Runnable { rerender() }
     private lateinit var connectButton: Button
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -195,6 +198,11 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             setOnCheckedChangeListener { _, _ -> rerender() }
         }
         infoRow.addView(hexBox)
+        paperBox = CheckBox(this).apply {
+            text = "Как на бумаге"
+            setOnCheckedChangeListener { _, _ -> rerender() }
+        }
+        infoRow.addView(paperBox)
         infoRow.addView(smallButton("Копировать") { copyLogs() })
         counterView = TextView(this).apply {
             textSize = 12f
@@ -357,6 +365,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (sessionBytes.size() < MAX_SESSION_BYTES) sessionBytes.write(data)
         totalBytes += data.size
         counterView.text = "Принято: $totalBytes байт" + (rawFile?.let { " → ${it.name}" } ?: "")
+        if (autoMode()) {
+            // Разбор целиком, но не чаще раза в 0,4 с — данные идут пачками.
+            mainHandler.removeCallbacks(renderRunnable)
+            mainHandler.postDelayed(renderRunnable, 400)
+            return
+        }
         outputView.append(decode(data))
         trimScreen()
         scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
@@ -365,7 +379,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun rerender() {
         if (!::outputView.isInitialized) return
         lastWasCR = false
-        outputView.text = decode(sessionBytes.toByteArray())
+        outputView.text = if (autoMode()) panelText(sessionBytes.toByteArray(), paperBox.isChecked)
+            else decode(sessionBytes.toByteArray())
         trimScreen()
         scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
     }
@@ -383,6 +398,58 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         outputView.text = ""
     }
 
+    private fun autoMode(): Boolean =
+        ::encSpinner.isInitialized && encSpinner.selectedItemPosition == 0 && !hexBox.isChecked
+
+    /** Разбор вывода панели: список событий или строки «как на бумаге». */
+    private fun panelText(bytes: ByteArray, paper: Boolean): String {
+        val d = PanelDecoder.decode(bytes)
+        if (!d.graphic) return d.visualLines.joinToString("\n")
+        if (paper) return PanelDecoder.logicalLines(d.visualLines).joinToString("\n")
+        return eventsText(d)
+    }
+
+    private fun eventsText(d: PanelDecoder.Decoded): String {
+        val events = PanelDecoder.parse(d.visualLines)
+        val sb = StringBuilder()
+        val title = PanelDecoder.title(d.visualLines)
+        if (title.isNotEmpty()) sb.append(title).append('\n')
+        val sys = events.count { it.isSystem }
+        sb.append("Событий: ").append(events.size)
+            .append(" (устройства ").append(events.size - sys).append(", системные ").append(sys).append(")\n")
+        if (d.unknownGlyphs.isNotEmpty())
+            sb.append("Внимание: ").append(d.unknownGlyphs.size).append(" незнакомых символов (□) — пришлите лог\n")
+        sb.append('\n')
+        events.forEachIndexed { i, e ->
+            val n = (i + 1).toString() + ". "
+            if (e.isSystem) {
+                sb.append(n).append("СИСТЕМА").append(if (e.node.isNotEmpty()) " · " + e.node else "").append('\n')
+            } else {
+                sb.append(n).append(e.address)
+                if (e.zone.isNotEmpty()) sb.append(" · ").append(e.zone)
+                if (e.devType.isNotEmpty()) sb.append(" · ").append(PanelDecoder.ru(e.devType) ?: e.devType)
+                sb.append('\n')
+            }
+            sb.append("   ").append(e.problem)
+            PanelDecoder.ru(e.problem)?.let { sb.append(" — ").append(it) }
+            sb.append('\n')
+            if (e.label.isNotEmpty() || e.label2.isNotEmpty()) {
+                sb.append("   ").append(listOf(e.label, e.label2).filter { it.isNotEmpty() }.joinToString(" · ")).append('\n')
+            }
+            sb.append("   ").append(e.date).append(' ').append(e.time).append("\n\n")
+        }
+        return sb.toString()
+    }
+
+    private fun eventsTsv(d: PanelDecoder.Decoded): String {
+        val sb = StringBuilder("Адрес\tЗона\tТип\tПроблема\tМесто\tМесто 2\tДата\tВремя\tУзел/панель\n")
+        for (e in PanelDecoder.parse(d.visualLines)) {
+            sb.append(listOf(e.address, e.zone, e.devType, e.problem, e.label, e.label2, e.date, e.time, e.node)
+                .joinToString("\t")).append('\n')
+        }
+        return sb.toString()
+    }
+
     /** Байты → текст для экрана. Сырые байты в файле не меняются. */
     private fun decode(bytes: ByteArray): String {
         val sb = StringBuilder(bytes.size * 2)
@@ -398,8 +465,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 c == 0x0A -> { if (!lastWasCR) sb.append('\n') }
                 c == 0x0C -> sb.append("\n──────── новая страница ────────\n")
                 c == 0x09 -> sb.append('\t')
-                enc == 1 && c in 0x60..0x7A -> sb.append((0x05D0 + (c - 0x60)).toChar())
-                enc == 2 && c in 0x80..0x9A -> sb.append((0x05D0 + (c - 0x80)).toChar())
+                enc == 2 && c in 0x60..0x7A -> sb.append((0x05D0 + (c - 0x60)).toChar())
+                enc == 3 && c in 0x80..0x9A -> sb.append((0x05D0 + (c - 0x80)).toChar())
                 c in 0x20..0x7E -> sb.append(c.toChar())
                 else -> sb.append(String.format("[%02X]", c))
             }
@@ -441,8 +508,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 c == 0x0A -> { if (!cr) sb.append('\n') }
                 c == 0x0C -> sb.append("\n---- новая страница ----\n")
                 c == 0x09 -> sb.append('\t')
-                enc == 1 && c in 0x60..0x7A -> sb.append((0x05D0 + (c - 0x60)).toChar())
-                enc == 2 && c in 0x80..0x9A -> sb.append((0x05D0 + (c - 0x80)).toChar())
+                enc == 2 && c in 0x60..0x7A -> sb.append((0x05D0 + (c - 0x60)).toChar())
+                enc == 3 && c in 0x80..0x9A -> sb.append((0x05D0 + (c - 0x80)).toChar())
                 c in 0x20..0x7E -> sb.append(c.toChar())
                 else -> sb.append(String.format("[%02X]", c))
             }
@@ -495,8 +562,22 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         sb.append("Байт: ").append(bytes.size).append('\n')
         sb.append("Кодировка расшифровки: ").append(ENCODINGS[enc]).append('\n')
         sb.append("Версия приложения: ").append(appVersion()).append("\n\n")
-        sb.append("=== РАСШИФРОВКА ===\n")
-        sb.append(decodeText(bytes, enc)).append("\n\n")
+        val d = PanelDecoder.decode(bytes)
+        if (d.graphic) {
+            sb.append("=== СОБЫТИЯ ===\n")
+            sb.append(eventsText(d)).append('\n')
+            sb.append("=== ТАБЛИЦА (TSV) ===\n")
+            sb.append(eventsTsv(d)).append('\n')
+            sb.append("=== КАК НА БУМАГЕ ===\n")
+            sb.append(PanelDecoder.logicalLines(d.visualLines).joinToString("\n")).append("\n\n")
+            if (d.unknownGlyphs.isNotEmpty()) {
+                sb.append("=== НЕЗНАКОМЫЕ СИМВОЛЫ ===\n")
+                sb.append(d.unknownGlyphs.joinToString("\n")).append("\n\n")
+            }
+        } else {
+            sb.append("=== РАСШИФРОВКА ===\n")
+            sb.append(decodeText(bytes, if (enc == 0) 1 else enc)).append("\n\n")
+        }
         sb.append("=== HEX (сырые байты) ===\n")
         sb.append(hexDump(bytes))
         val out = File(logDir(), raw.nameWithoutExtension.replace("panel_raw_", "panel_log_") + ".txt")
@@ -541,7 +622,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val sb = StringBuilder()
         sb.append("Лог NFS2-3030, ").append(raw.name).append(", ").append(bytes.size).append(" байт, ")
             .append(selectedBaud()).append(" 8N1, ").append(ENCODINGS[enc]).append("\n\n")
-        sb.append(decodeText(bytes, enc))
+        val d = PanelDecoder.decode(bytes)
+        sb.append(if (d.graphic) eventsText(d) else decodeText(bytes, if (enc == 0) 1 else enc))
         if (bytes.size <= 8_000) sb.append("\n\nHEX:\n").append(hexDump(bytes))
         var text = sb.toString()
         var cut = false
