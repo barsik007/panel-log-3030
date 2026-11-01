@@ -70,6 +70,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private lateinit var encSpinner: Spinner
     private lateinit var hexBox: CheckBox
     private lateinit var paperBox: CheckBox
+    private lateinit var siteInput: android.widget.AutoCompleteTextView
     private val renderRunnable = Runnable { rerender() }
     private lateinit var connectButton: Button
 
@@ -159,6 +160,21 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             setPadding(0, 0, 0, dp(6))
         }
         root.addView(devicesView)
+
+        // Объект, на котором снимаем лог (запоминается, есть подсказки из прошлых)
+        val siteRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+        siteRow.addView(TextView(this).apply { text = "Объект:"; textSize = 14f; setPadding(0, 0, dp(6), 0) })
+        siteInput = android.widget.AutoCompleteTextView(this).apply {
+            hint = "название объекта / שם האתר"
+            textSize = 15f
+            setSingleLine()
+            threshold = 1
+            setText(prefs().getString("lastSite", ""))
+            setAdapter(ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, knownSites()))
+            setOnFocusChangeListener { _, has -> if (has) showDropDown() }
+        }
+        siteRow.addView(siteInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(siteRow)
 
         // Строка настроек: скорость + кодировка
         val settingsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -312,6 +328,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         }
         port = p
         openRawFile()
+        rememberSite(rawFile)
         ioManager = SerialInputOutputManager(p, this).also { it.start() }
 
         connectButton.text = "Отключить"
@@ -557,6 +574,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val sb = StringBuilder()
         sb.append("=== Panel Log 3030: лог принтерного порта NFS2-3030 ===\n")
         sb.append("Файл: ").append(raw.name).append('\n')
+        sb.append("Объект: ").append(siteForReport().ifEmpty { "не указан" }).append('\n')
         sb.append("Создан отчёт: ").append(now).append('\n')
         sb.append("Скорость: ").append(selectedBaud()).append(" 8N1\n")
         sb.append("Байт: ").append(bytes.size).append('\n')
@@ -597,27 +615,64 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         return if (d.graphic) PanelDecoder.parse(d.visualLines) else emptyList()
     }
 
+    // ------------------------------------------------------- Объекты
+
+    private fun prefs() = getSharedPreferences("panellog", Context.MODE_PRIVATE)
+
+    private fun knownSites(): List<String> =
+        (prefs().getStringSet("sites", emptySet()) ?: emptySet()).sorted()
+
+    private fun currentSite(): String = if (::siteInput.isInitialized) siteInput.text.toString().trim() else ""
+
+    /** Запоминает объект: в подсказках и рядом с файлом лога (panel_raw_….site). */
+    private fun rememberSite(raw: File?) {
+        val site = currentSite()
+        if (site.isEmpty()) return
+        val set = HashSet(prefs().getStringSet("sites", emptySet()) ?: emptySet())
+        set.add(site)
+        prefs().edit().putStringSet("sites", set).putString("lastSite", site).apply()
+        siteInput.setAdapter(ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, set.sorted()))
+        raw?.let { try { File(it.parentFile, it.nameWithoutExtension + ".site").writeText(site) } catch (_: Exception) {} }
+    }
+
+    /** Объект для отчёта: введённый сейчас, иначе сохранённый вместе с логом. */
+    private fun siteForReport(): String {
+        val s = currentSite()
+        if (s.isNotEmpty()) return s
+        val raw = latestRawFile() ?: return ""
+        return try { File(raw.parentFile, raw.nameWithoutExtension + ".site").readText().trim() } catch (_: Exception) { "" }
+    }
+
     private fun shareMenu() {
-        val items = arrayOf("Список ошибок в WhatsApp", "PDF-отчёт", "Файл лога (для Claude)")
+        val items = arrayOf(
+            "WhatsApp — иврит",
+            "WhatsApp — иврит + русский",
+            "PDF — иврит",
+            "PDF — иврит + русский",
+            "Файл лога (для Claude)"
+        )
         android.app.AlertDialog.Builder(this)
-            .setTitle("Отправить")
+            .setTitle("Отправить" + siteForReport().let { if (it.isNotEmpty()) " · $it" else "" })
             .setItems(items) { _, which ->
+                rememberSite(rawFile)
                 when (which) {
-                    0 -> shareWhatsapp()
-                    1 -> sharePdf()
+                    0 -> shareWhatsapp(true)
+                    1 -> shareWhatsapp(false)
+                    2 -> sharePdf(true)
+                    3 -> sharePdf(false)
                     else -> shareLogs()
                 }
             }
             .show()
     }
 
-    private fun shareWhatsapp() {
+    private fun shareWhatsapp(he: Boolean) {
         val events = currentEvents()
         if (events.isEmpty()) {
             Toast.makeText(this, "Нет разобранных событий — сначала снимите лог с панели", Toast.LENGTH_LONG).show()
             return
         }
-        val text = ReportExport.whatsappText(events)
+        val text = ReportExport.whatsappText(events, siteForReport(), he)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, text)
@@ -631,7 +686,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         }
     }
 
-    private fun sharePdf() {
+    private fun sharePdf(he: Boolean) {
         val events = currentEvents()
         if (events.isEmpty()) {
             Toast.makeText(this, "Нет разобранных событий — сначала снимите лог с панели", Toast.LENGTH_LONG).show()
@@ -640,7 +695,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
         val out = File(logDir(), "panel_report_$stamp.pdf")
         try {
-            ReportExport.writePdf(events, out)
+            ReportExport.writePdf(events, out, siteForReport(), he)
         } catch (e: Exception) {
             Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show()
             return

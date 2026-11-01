@@ -25,7 +25,8 @@ object ReportExport {
         events.maxByOrNull { it.date + it.time }?.date
             ?: SimpleDateFormat("dd.MM.yyyy", Locale.US).format(Date())
 
-    private fun problemLine(e: PanelDecoder.PanelEvent): String {
+    private fun problemLine(e: PanelDecoder.PanelEvent, he: Boolean): String {
+        if (he) return e.problem
         val ru = PanelDecoder.ru(e.problem)
         return if (ru != null) "${e.problem} ($ru)" else e.problem
     }
@@ -34,31 +35,36 @@ object ReportExport {
         listOf(e.label, e.label2).filter { it.isNotEmpty() }.joinToString(" · ")
 
     /** Текст для WhatsApp: *жирный* заголовок, устройства по адресам, системные отдельно. */
-    fun whatsappText(events: List<PanelDecoder.PanelEvent>): String {
-        val site = siteName(events)
+    fun whatsappText(events: List<PanelDecoder.PanelEvent>, siteIn: String, he: Boolean): String {
+        val site = siteIn.ifBlank { siteName(events) }
         val dev = events.filter { !it.isSystem }
         val sys = events.filter { it.isSystem }
         val sb = StringBuilder()
-        sb.append("*Неисправности панели").append(if (site.isNotEmpty()) " — $site" else "").append("*\n")
-        sb.append(reportDate(events)).append(" · событий: ").append(events.size).append("\n\n")
+        if (he) {
+            sb.append("*תקלות ברכזת").append(if (site.isNotEmpty()) " — $site" else "").append("*\n")
+            sb.append(reportDate(events)).append(" · אירועים: ").append(events.size).append("\n\n")
+        } else {
+            sb.append("*Неисправности панели").append(if (site.isNotEmpty()) " — $site" else "").append("*\n")
+            sb.append(reportDate(events)).append(" · событий: ").append(events.size).append("\n\n")
+        }
         if (dev.isNotEmpty()) {
-            sb.append("*Устройства (").append(dev.size).append("):*\n")
+            sb.append(if (he) "*התקנים (" else "*Устройства (").append(dev.size).append("):*\n")
             dev.forEachIndexed { i, e ->
-                sb.append(i + 1).append(". ").append(e.address).append(" — ").append(problemLine(e)).append('\n')
+                sb.append(i + 1).append(". ").append(e.address).append(" — ").append(problemLine(e, he)).append('\n')
                 val p = place(e)
                 if (p.isNotEmpty()) sb.append("    ").append(p).append('\n')
             }
             sb.append('\n')
         }
         if (sys.isNotEmpty()) {
-            sb.append("*Системные (").append(sys.size).append("):*\n")
-            sys.forEach { e -> sb.append("• ").append(problemLine(e)).append('\n') }
+            sb.append(if (he) "*מערכת (" else "*Системные (").append(sys.size).append("):*\n")
+            sys.forEach { e -> sb.append("• ").append(problemLine(e, he)).append('\n') }
         }
         return sb.toString().trimEnd()
     }
 
     /** PDF A4: шапка и таблица; текст переносится, иврит выравнивается справа налево. */
-    fun writePdf(events: List<PanelDecoder.PanelEvent>, out: File) {
+    fun writePdf(events: List<PanelDecoder.PanelEvent>, out: File, siteIn: String, he: Boolean) {
         val pageW = 595; val pageH = 842; val margin = 36
         val doc = PdfDocument()
 
@@ -70,8 +76,12 @@ object ReportExport {
         val line = Paint().apply { color = Color.rgb(150, 150, 150); strokeWidth = 0.7f; style = Paint.Style.STROKE }
         val headFill = Paint().apply { color = Color.rgb(232, 234, 237); style = Paint.Style.FILL }
 
-        val widths = intArrayOf(22, 70, 150, 190, 91) // сумма 523 = 595 - 2*36
-        val headers = arrayOf("#", "כתובת\nАдрес", "תקלה\nНеисправность", "מיקום\nМесто", "זמן\nВремя")
+        // Колонки слева направо; для отчёта на иврите порядок зеркальный (# справа).
+        val baseWidths = intArrayOf(22, 70, 150, 190, 91) // сумма 523 = 595 - 2*36
+        val baseHeaders = if (he) arrayOf("#", "כתובת", "תקלה", "מיקום", "זמן")
+            else arrayOf("#", "כתובת\nАдрес", "תקלה\nНеисправность", "מיקום\nМесто", "זמן\nВремя")
+        val widths = if (he) baseWidths.reversedArray() else baseWidths
+        val headers = if (he) baseHeaders.reversedArray() else baseHeaders
         val pad = 4f
 
         fun layout(text: String, paint: TextPaint, w: Int): StaticLayout =
@@ -103,12 +113,15 @@ object ReportExport {
             page = doc.startPage(PdfDocument.PageInfo.Builder(pageW, pageH, pageNo).create())
             y = margin.toFloat()
             if (pageNo == 1) {
-                val site = siteName(events)
-                val t = layout("דוח תקלות רכזת · Отчёт о неисправностях" + if (site.isNotEmpty()) "\n$site" else "", titlePaint, pageW - 2 * margin)
+                val site = siteIn.ifBlank { siteName(events) }
+                val head = if (he) "דוח תקלות רכזת" else "דוח תקלות רכזת · Отчёт о неисправностях"
+                val t = layout(head + if (site.isNotEmpty()) "\n$site" else "", titlePaint, pageW - 2 * margin)
                 page!!.canvas.save(); page!!.canvas.translate(margin.toFloat(), y); t.draw(page!!.canvas); page!!.canvas.restore()
                 y += t.height + 6
                 val sys = events.count { it.isSystem }
-                val meta = "Дата: ${reportDate(events)}   Событий: ${events.size} (устройства ${events.size - sys}, системные $sys)   Панель: NFS2-3030"
+                val meta = if (he)
+                    "תאריך: ${reportDate(events)}   אירועים: ${events.size} (התקנים ${events.size - sys}, מערכת $sys)   רכזת: NFS2-3030"
+                    else "Дата: ${reportDate(events)}   Событий: ${events.size} (устройства ${events.size - sys}, системные $sys)   Панель: NFS2-3030"
                 val m = layout(meta, metaPaint, pageW - 2 * margin)
                 page!!.canvas.save(); page!!.canvas.translate(margin.toFloat(), y); m.draw(page!!.canvas); page!!.canvas.restore()
                 y += m.height + 10
@@ -118,13 +131,16 @@ object ReportExport {
 
         newPage()
         events.forEachIndexed { i, e ->
-            val cells = listOf(
-                layout((i + 1).toString(), cellPaint, widths[0]),
-                layout(if (e.isSystem) "—" else e.address + (if (e.zone.isNotEmpty()) "\n" + e.zone else ""), monoPaint, widths[1]),
-                layout(e.problem + (PanelDecoder.ru(e.problem)?.let { "\n$it" } ?: ""), cellPaint, widths[2]),
-                layout(if (e.isSystem) (if (e.node.isNotEmpty()) e.node else "Система") else place(e).ifEmpty { "—" }, cellPaint, widths[3]),
-                layout(e.date + "\n" + e.time, cellPaint, widths[4])
+            val texts = listOf(
+                (i + 1).toString(),
+                if (e.isSystem) "—" else e.address + (if (e.zone.isNotEmpty()) "\n" + e.zone else ""),
+                e.problem + (if (he) "" else PanelDecoder.ru(e.problem)?.let { "\n$it" } ?: ""),
+                if (e.isSystem) (e.node.ifEmpty { if (he) "מערכת" else "Система" }) else place(e).ifEmpty { "—" },
+                e.date + "\n" + e.time
             )
+            val paints = listOf(cellPaint, monoPaint, cellPaint, cellPaint, cellPaint)
+            val order = if (he) listOf(4, 3, 2, 1, 0) else listOf(0, 1, 2, 3, 4)
+            val cells = order.mapIndexed { col, k -> layout(texts[k], paints[k], widths[col]) }
             val h = cells.maxOf { it.height } + 2 * pad
             if (y + h > pageH - margin - 16) newPage()
             drawRow(cells, false)
