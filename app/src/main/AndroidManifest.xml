@@ -4,7 +4,9 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
-        android:label="Panel Log 3030"
+        android:label="G1 Hotelo"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Material.Light.DarkActionBar">
 
