@@ -171,12 +171,13 @@ object PeriodExport {
     private fun d(ts: Long) = SimpleDateFormat("dd.MM.yyyy", Locale.US).format(Date(ts))
     private fun dt(ts: Long) = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(Date(ts))
 
-    private fun periodText(r: PeriodReport) =
-        if (d(r.from) == d(r.to)) d(r.to) else d(r.from) + " – " + d(r.to)
+    private fun periodText(r: PeriodReport) = periodText2(r.from, r.to)
+    private fun periodText2(from: Long, to: Long) =
+        if (d(from) == d(to)) d(to) else d(from) + " – " + d(to)
 
     private data class Sec(val he: String, val ru: String, val items: List<Fault>)
 
-    private fun sections(r: PeriodReport) = listOf(
+    private fun sections(r: PanelSection) = listOf(
         Sec("טעון אישור לתשלום", "Требует согласования оплаты", r.billable),
         Sec("תוקן", "Устранено", r.fixed),
         Sec("חדש", "Новые", r.added),
@@ -218,7 +219,11 @@ object PeriodExport {
             "לתשלום ${r.billable.size} · תוקנו ${r.fixed.size} · חדשות ${r.added.size} · נשארו ${r.remaining.size}"
         else "К оплате ${r.billable.size} · устранено ${r.fixed.size} · новых ${r.added.size} · осталось ${r.remaining.size}"
         sb.append(counts).append("\n")
-        for (s in sections(r)) {
+        for (ps in r.panels) {
+        sb.append("\n━━ *").append(ps.panel.name).append("*")
+        if (ps.panel.detected.isNotEmpty() && ps.panel.detected != ps.panel.name) sb.append(" (").append(ps.panel.detected).append(")")
+        sb.append(" ━━\n")
+        for (s in sections(ps)) {
             if (s.items.isEmpty()) continue
             sb.append("\n*").append(s.he).append(if (heOnly) "" else " / " + s.ru).append(" (").append(s.items.size).append("):*\n")
             s.items.forEachIndexed { i, f ->
@@ -230,6 +235,7 @@ object PeriodExport {
                 val dn = done(f, store, heOnly)
                 if (dn.isNotEmpty()) sb.append("    ✔ ").append(dn).append('\n')
             }
+        }
         }
         return sb.toString().trimEnd()
     }
@@ -300,11 +306,11 @@ object PeriodExport {
             if (r.site.address.isNotEmpty()) append(r.site.address).append('\n')
             if (heOnly) {
                 append("תקופה: ").append(periodText(r)).append("   קריאות: ").append(r.logsCount)
-                append("   רכזת: NFS2-3030").append(if (r.site.panel.isNotEmpty()) " · " + r.site.panel else "").append('\n')
+                append("   רכזות: ").append(r.panels.size).append('\n')
                 append("לתשלום ${r.billable.size} · תוקנו ${r.fixed.size} · חדשות ${r.added.size} · נשארו ${r.remaining.size}")
             } else {
                 append("Период: ").append(periodText(r)).append("   Логов: ").append(r.logsCount)
-                append("   Панель: NFS2-3030").append(if (r.site.panel.isNotEmpty()) " · " + r.site.panel else "").append('\n')
+                append("   Панелей (רכזות): ").append(r.panels.size).append('\n')
                 append("К оплате ${r.billable.size} · устранено ${r.fixed.size} · новых ${r.added.size} · осталось ${r.remaining.size}")
             }
         }
@@ -312,7 +318,15 @@ object PeriodExport {
         drawLayout(meta, margin.toFloat()); y += meta.height + 8
 
         val bottom = pageH - margin - 10
-        for (s in sections(r)) {
+        val panelPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 13f; typeface = Typeface.DEFAULT_BOLD; color = Color.rgb(179, 38, 30) }
+        for (ps in r.panels) {
+        val pTitle = layout(ps.panel.name + (if (ps.panel.detected.isNotEmpty() && ps.panel.detected != ps.panel.name) " · " + ps.panel.detected else "") +
+            "   (" + periodText2(ps.from, ps.to) + (if (heOnly) ", קריאות: " else ", логов: ") + ps.logsCount + ")", panelPaint, content, align)
+        if (y + pTitle.height + 60 > bottom) newPage(false)
+        y += 10
+        drawLayout(pTitle, margin.toFloat()); y += pTitle.height + 2
+        page!!.canvas.drawLine(margin.toFloat(), y, (pageW - margin).toFloat(), y, line)
+        for (s in sections(ps)) {
             if (s.items.isEmpty()) continue
             val secTitle = layout(s.he + (if (heOnly) "" else " / " + s.ru) + " (" + s.items.size + ")", secPaint, content, align)
             if (y + secTitle.height + 40 > bottom) newPage(false)
@@ -334,6 +348,7 @@ object PeriodExport {
                 if (y + h > bottom) newPage(true)
                 drawRow(cells, false)
             }
+        }
         }
         // подписи
         val sign = layout(if (heOnly) "חתימת הטכנאי: ____________        נציג הלקוח: ____________" else "חתימת הטכנאי / Подпись техника: __________     נציג הלקוח / Представитель клиента: __________", metaPaint, content, align)

@@ -80,6 +80,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private var siteId: String? = null
     private var faultId: String? = null
     private var tab = 0
+    private var panelSel: String? = null      // выбранная панель на экране объекта (null = все)
+    private var capturePanelId: String? = null
     private var searchText = ""
     private var paperText = ""
 
@@ -268,7 +270,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             val info = (if (s.lastLogTs > 0) I18n.t("lastLog") + " " + fmt(s.lastLogTs) else I18n.t("noLogs")) +
                 " · " + I18n.f("activeN", s.activeCount)
             c.addView(tv(info, 13f, color = Color.rgb(85, 93, 104)))
-            c.setOnClickListener { siteId = s.id; tab = 0; searchText = ""; go(Scr.SITE) }
+            c.setOnClickListener { siteId = s.id; tab = 0; searchText = ""; panelSel = null; go(Scr.SITE) }
             c.setOnLongClickListener { siteMenu(s); true }
             box.addView(c)
         }
@@ -289,7 +291,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 if (n.isEmpty()) return@setPositiveButton
                 if (edit == null) {
                     siteId = store.addSite(n, addr.text.toString().trim(), note.text.toString().trim())
-                    tab = 0; searchText = ""; go(Scr.SITE)
+                    store.addPanel(siteId!!, "רכזת 1")
+                    tab = 0; searchText = ""; panelSel = null; go(Scr.SITE)
                 } else {
                     store.updateSite(edit.id, n, addr.text.toString().trim(), note.text.toString().trim()); render()
                 }
@@ -321,14 +324,33 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val sub = listOf(s.address, s.note).filter { it.isNotEmpty() }.joinToString(" · ")
         if (sub.isNotEmpty()) box.addView(tv(sub, 13f, color = Color.DKGRAY))
 
+        // панели (רכזות)
+        val panels = store.panels(s.id)
+        if (panelSel != null && panels.none { it.id == panelSel }) panelSel = null
+        val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        fun chip(label: String, sel: Boolean, onClick: () -> Unit, onLong: (() -> Unit)? = null) = Button(this).apply {
+            text = label; isAllCaps = false; textSize = 13f
+            background = rounded(if (sel) Color.rgb(21, 24, 28) else Color.WHITE, 18, Color.rgb(195, 201, 209))
+            setTextColor(if (sel) Color.WHITE else Color.rgb(21, 24, 28))
+            setPadding(dp(14), 0, dp(14), 0)
+            setOnClickListener { onClick() }
+            if (onLong != null) setOnLongClickListener { onLong(); true }
+        }
+        val chipLp = { LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)).apply { marginEnd = dp(6) } }
+        if (panels.size > 1) chips.addView(chip(I18n.t("all") + " · " + panels.sumOf { it.activeCount }, panelSel == null, { panelSel = null; render() }), chipLp())
+        for (p in panels) chips.addView(chip(p.name + " · " + p.activeCount, panelSel == p.id || panels.size == 1,
+            { panelSel = p.id; render() }, { panelMenu(p) }), chipLp())
+        chips.addView(chip(I18n.t("newPanel"), false, { panelDialog(null) }), chipLp())
+        box.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) })
+
         box.addView(row(
-            btn(I18n.t("takeLog"), true) { startCapture() },
+            btn(I18n.t("takeLog"), true) { choosePanelThen { startCapture() } },
             btn(I18n.t("report")) { periodMenu() },
             btn(I18n.t("logs")) { go(Scr.LOGS) }
         ).apply { setPadding(0, dp(8), 0, 0) })
 
-        val logs = store.logs(s.id)
-        val faults = store.faults(s.id)
+        val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
+        val faults = store.faults(s.id).filter { panelSel == null || it.panelId == panelSel }
         if (logs.isEmpty()) {
             box.addView(tv(I18n.t("noLogsYet"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(14), 0, 0) })
             return sv
@@ -336,18 +358,24 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         // сводка
         val active = faults.count { it.active }
         var fixedN = 0; var newN = 0
-        if (logs.size >= 2) {
-            val b = store.logFaultIds(logs[0].id); val a = store.logFaultIds(logs[1].id)
-            fixedN = a.count { it !in b }; newN = b.count { it !in a }
+        for (p in panels) {
+            if (panelSel != null && p.id != panelSel) continue
+            val pl = logs.filter { it.panelId == p.id }
+            if (pl.size >= 2) {
+                val b = store.logFaultIds(pl[0].id); val a = store.logFaultIds(pl[1].id)
+                fixedN += a.count { it !in b }; newN += b.count { it !in a }
+            }
         }
         box.addView(tv(I18n.f("summary", fmt(logs[0].ts), active, fixedN, newN), 13f, color = Color.rgb(60, 66, 75))
             .apply { setPadding(0, dp(10), 0, dp(2)) })
         // подсказки по шлейфам
+        val pName = panels.associate { it.id to it.name }
         faults.filter { it.active && !it.isSystem && it.loop.isNotEmpty() }
-            .groupBy { it.loop to it.problem }
+            .groupBy { Triple(it.panelId, it.loop, it.problem) }
             .filter { it.value.size >= 5 }
             .forEach { (k, v) ->
-                box.addView(tv("💡 " + I18n.f("loopHint", k.first.trimStart('0'), v.size, I18n.panel(k.second)), 13f,
+                val prefix = if (panels.size > 1) (pName[k.first] ?: "") + " · " else ""
+                box.addView(tv("💡 " + prefix + I18n.f("loopHint", k.second.trimStart('0'), v.size, I18n.panel(k.third)), 13f,
                     color = Color.rgb(122, 74, 0)).apply {
                     background = rounded(Color.rgb(255, 241, 214), 8); setPadding(dp(8), dp(6), dp(8), dp(6))
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
@@ -387,10 +415,13 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val list = faultListBox ?: return
         val sid = siteId ?: return
         list.removeAllViews()
+        val panels = store.panels(sid)
+        val pName = panels.associate { it.id to it.name }
         val logs = store.logs(sid)
-        val lastTs = logs.firstOrNull()?.ts ?: 0
+        val lastTsBy = panels.associate { p -> p.id to (logs.firstOrNull { it.panelId == p.id }?.ts ?: 0L) }
+        val countBy = panels.associate { p -> p.id to logs.count { it.panelId == p.id } }
         val q = searchText.trim().lowercase()
-        val faults = store.faults(sid).filter {
+        val faults = store.faults(sid).filter { panelSel == null || it.panelId == panelSel }.filter {
             when (tab) { 0 -> it.active; 1 -> !it.active; else -> true }
         }.filter {
             q.isEmpty() || listOf(it.address, it.zone, it.label, it.label2, it.problem, it.node, it.devType,
@@ -401,11 +432,14 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             list.addView(tv(I18n.t("noFaults"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
             return
         }
-        for (f in faults) list.addView(faultRow(f, lastTs, logs.size))
+        val showPanel = panelSel == null && panels.size > 1
+        for (f in faults) list.addView(faultRow(f, lastTsBy[f.panelId] ?: 0L, countBy[f.panelId] ?: 0,
+            if (showPanel) pName[f.panelId] ?: "" else ""))
     }
 
-    private fun faultRow(f: Fault, lastTs: Long, logCount: Int): View {
+    private fun faultRow(f: Fault, lastTs: Long, logCount: Int, panelTag: String): View {
         val c = card()
+        if (panelTag.isNotEmpty()) c.addView(tv(panelTag, 12f, true, Color.rgb(179, 38, 30)))
         val head = (if (f.isSystem) I18n.t("system") + (if (f.node.isNotEmpty()) " · " + f.node else "")
             else f.address + (if (f.devType.isNotEmpty()) " · " + I18n.devType(f.devType) else ""))
         c.addView(tv(head, 15f, true))
@@ -444,7 +478,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun faultView(): View {
         val f = faultId?.let { store.fault(it) } ?: return siteView().also { scr = Scr.SITE }
         val (sv, box) = page()
-        val logs = store.logs(f.siteId)
+        val logs = store.panelLogs(f.panelId)
+        val pn = store.panel(f.panelId)
+        if (pn != null) box.addView(tv(pn.name, 13f, true, Color.rgb(179, 38, 30)))
         val head = if (f.isSystem) I18n.t("system") else f.address
         box.addView(tv(head, 22f, true))
         box.addView(tv(I18n.panel(f.problem), 17f, true).apply { setPadding(0, dp(4), 0, 0) })
@@ -605,7 +641,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun captureView(): View {
         val s = siteId?.let { store.site(it) }
         val (sv, box) = page()
-        box.addView(tv(I18n.t("capture") + (if (s != null) " · " + s.name else ""), 20f, true))
+        val cp = capturePanelId?.let { store.panel(it) }
+        box.addView(tv(I18n.t("capture") + (if (s != null) " · " + s.name else "") + (if (cp != null) " · " + cp.name else ""), 20f, true))
         val statusTv = tv(captureStatus.ifEmpty { I18n.t("notConnected") }, 14f, true,
             if (captureError) Color.rgb(200, 30, 30) else Color.rgb(21, 24, 28)).apply { setPadding(0, dp(8), 0, dp(4)) }
         captureStatusView = statusTv
@@ -653,20 +690,78 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun finishCapture() {
         disconnect()
         val sid = siteId ?: return
+        val pid = capturePanelId ?: return
         val bytes = captureBytes.toByteArray()
         if (bytes.isEmpty()) { toast(I18n.t("noData")); return }
-        val site = store.site(sid)
-        val r = store.processLog(sid, bytes)
+        val chosen = store.panel(pid) ?: return
+        val detected = store.detectPanelName(bytes)
+        val other = if (detected.isEmpty()) null
+            else store.panels(sid).firstOrNull { it.id != pid && it.detected == detected }
+        if (other != null && chosen.detected != detected) {
+            AlertDialog.Builder(this)
+                .setMessage(I18n.f("panelGuess", detected, other.name, chosen.name))
+                .setPositiveButton(I18n.f("saveTo", other.name)) { _, _ -> saveCaptured(sid, other.id, bytes) }
+                .setNegativeButton(I18n.f("saveTo", chosen.name)) { _, _ -> saveCaptured(sid, chosen.id, bytes) }
+                .setCancelable(false).show()
+        } else saveCaptured(sid, pid, bytes)
+    }
+
+    private fun saveCaptured(sid: String, pid: String, bytes: ByteArray) {
+        val before = store.panel(pid)
+        val r = store.processLog(sid, pid, bytes)
         captureBytes.reset()
-        val msg = StringBuilder(I18n.t("saved")).append("\n\n")
+        val msg = StringBuilder(I18n.t("saved")).append(" · ").append(before?.name ?: "").append("\n\n")
         if (r.first) msg.append(I18n.f("firstLogBody", r.total))
         else msg.append(I18n.f("compareBody", r.fixed, r.added, r.recurred, r.remaining))
-        if (site != null && site.panel.isNotEmpty() && r.panelName.isNotEmpty() && site.panel != r.panelName)
-            msg.append("\n\n").append(I18n.f("otherPanel", r.panelName, site.panel))
-        tab = 0; searchText = ""
+        if (before != null && before.detected.isNotEmpty() && r.panelName.isNotEmpty() && before.detected != r.panelName)
+            msg.append("\n\n").append(I18n.f("otherPanel", r.panelName, before.detected))
+        tab = 0; searchText = ""; panelSel = pid
         go(Scr.SITE)
         AlertDialog.Builder(this).setTitle(if (r.first) I18n.t("capture") else I18n.t("compareTitle"))
             .setMessage(msg.toString()).setPositiveButton(I18n.t("close"), null).show()
+    }
+
+    /** Выбор панели перед снятием лога: выбранная на экране, единственная, или спросить. */
+    private fun choosePanelThen(then: () -> Unit) {
+        val sid = siteId ?: return
+        var panels = store.panels(sid)
+        if (panels.isEmpty()) { store.addPanel(sid, "רכזת 1"); panels = store.panels(sid) }
+        val sel = panelSel
+        if (sel != null && panels.any { it.id == sel }) { capturePanelId = sel; then(); return }
+        if (panels.size == 1) { capturePanelId = panels[0].id; then(); return }
+        val labels = panels.map { it.name + (if (it.lastLogTs > 0) "  · " + fmt(it.lastLogTs) else "") } + I18n.t("newPanel")
+        AlertDialog.Builder(this).setTitle(I18n.t("choosePanel"))
+            .setItems(labels.toTypedArray()) { _, w ->
+                if (w < panels.size) { capturePanelId = panels[w].id; then() }
+                else panelDialog(null) { newId -> capturePanelId = newId; then() }
+            }.show()
+    }
+
+    private fun panelDialog(edit: Panel?, after: ((String) -> Unit)? = null) {
+        val sid = siteId ?: return
+        val n = store.panels(sid).size + 1
+        val e = input(I18n.t("panelName"), edit?.name ?: "רכזת $n")
+        AlertDialog.Builder(this).setTitle(if (edit == null) I18n.t("newPanel") else I18n.t("editPanel"))
+            .setView(dialogBox().apply { addView(e) })
+            .setPositiveButton(I18n.t("ok")) { _, _ ->
+                val name = e.text.toString().trim().ifEmpty { "רכזת $n" }
+                if (edit == null) {
+                    val id = store.addPanel(sid, name)
+                    if (after != null) after(id) else { panelSel = id; render() }
+                } else { store.renamePanel(edit.id, name); render() }
+            }
+            .setNegativeButton(I18n.t("cancel"), null).show()
+    }
+
+    private fun panelMenu(p: Panel) {
+        AlertDialog.Builder(this).setTitle(p.name + if (p.detected.isNotEmpty()) " · " + p.detected else "")
+            .setItems(arrayOf(I18n.t("editPanel"), I18n.t("deletePanel"))) { _, w ->
+                if (w == 0) panelDialog(p)
+                else AlertDialog.Builder(this).setMessage(I18n.f("deletePanelQ", p.name))
+                    .setPositiveButton(I18n.t("delete")) { _, _ ->
+                        store.deletePanel(p.id); if (panelSel == p.id) panelSel = null; render()
+                    }.setNegativeButton(I18n.t("cancel"), null).show()
+            }.show()
     }
 
     private fun leaveCapture() {
@@ -740,10 +835,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val s = siteId?.let { store.site(it) } ?: return homeView().also { scr = Scr.HOME }
         val (sv, box) = page()
         box.addView(tv(I18n.t("logsTitle") + " · " + s.name, 20f, true))
-        val logs = store.logs(s.id)
+        val pName = store.panels(s.id).associate { it.id to it.name }
+        val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
         if (logs.isEmpty()) box.addView(tv(I18n.t("noLogsYet"), 14f, color = Color.DKGRAY))
         for (l in logs) {
             val c = card()
+            c.addView(tv(pName[l.panelId] ?: "", 12f, true, Color.rgb(179, 38, 30)))
             c.addView(tv(I18n.f("logLine", fmt(l.ts), l.events), 15f, true))
             c.setOnClickListener { logMenu(l) }
             box.addView(c)
@@ -761,7 +858,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                     paperText = (if (d.graphic) PanelDecoder.logicalLines(d.visualLines) else d.visualLines).joinToString("\n")
                     go(Scr.PAPER)
                 }
-                1 -> reportMenu(l.ts)
+                1 -> reportMenu(l.panelId) { _ -> l.ts }
                 2 -> shareLogFile(l)
                 3 -> AlertDialog.Builder(this).setMessage(I18n.t("deleteLog") + "?")
                     .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteLog(l); render() }
@@ -826,27 +923,37 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     private fun periodMenu() {
         val sid = siteId ?: return
-        val logs = store.logs(sid)
-        if (logs.isEmpty()) { toast(I18n.t("noLogsForReport")); return }
+        if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
+        val panels = store.panels(sid)
+        val sel = panelSel
+        if (sel != null || panels.size <= 1) { periodChoice(sel); return }
+        val labels = listOf(I18n.t("allPanels")) + panels.map { it.name }
+        AlertDialog.Builder(this).setTitle(I18n.t("reportScope"))
+            .setItems(labels.toTypedArray()) { _, w -> periodChoice(if (w == 0) null else panels[w - 1].id) }.show()
+    }
+
+    private fun periodChoice(panelId: String?) {
         AlertDialog.Builder(this).setTitle(I18n.t("periodTitle"))
             .setItems(arrayOf(I18n.t("sinceLast"), I18n.t("sinceDate"), I18n.t("allTime"))) { _, w ->
                 when (w) {
-                    0 -> reportMenu(if (logs.size >= 2) logs[1].ts else logs[0].ts)
+                    // у каждой панели — свой прошлый лог
+                    0 -> reportMenu(panelId) { logs -> if (logs.size >= 2) logs[logs.size - 2].ts else logs.last().ts }
                     1 -> {
                         val cal = Calendar.getInstance()
                         DatePickerDialog(this, { _, y, m, dd ->
                             val c = Calendar.getInstance().apply { set(y, m, dd, 0, 0, 0); set(Calendar.MILLISECOND, 0) }
-                            reportMenu(c.timeInMillis)
+                            val from = c.timeInMillis
+                            reportMenu(panelId) { _ -> from }
                         }, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH)).show()
                     }
-                    else -> reportMenu(0)
+                    else -> reportMenu(panelId) { _ -> 0L }
                 }
             }.show()
     }
 
-    private fun reportMenu(fromTs: Long) {
+    private fun reportMenu(panelId: String?, fromFor: (List<LogRec>) -> Long) {
         val sid = siteId ?: return
-        val r = store.period(sid, fromTs) ?: run { toast(I18n.t("noLogsForReport")); return }
+        val r = store.period(sid, panelId, fromFor) ?: run { toast(I18n.t("noLogsForReport")); return }
         // Иврит в настройках — только иврит; русский — выбор: иврит или иврит + перевод
         val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
             else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
