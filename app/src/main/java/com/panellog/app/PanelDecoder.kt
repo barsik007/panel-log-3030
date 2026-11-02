@@ -64,6 +64,11 @@ object PanelDecoder {
         "00E000E00000" to "\"",
         "000606000000" to ".",
         "402010080400" to "\\",
+        "000A0C000000" to ",",
+        "10107C101000" to "+",
+        "FE1028448200" to "K",
+        "FE9090906000" to "P",
+        "804020508E00" to "ץ",
         "FE403040FE00" to "M",
         "7C8282827C00" to "O",
         "FE60100CFE00" to "N",
@@ -212,7 +217,11 @@ object PanelDecoder {
             val addr = m.groupValues[6]
             // На первом листе дата была «месяц день,», здесь «день месяц».
             // Пока считаем «день месяц»; формат уточним по дню недели позже.
-            val date = m.groupValues[3] + "." + m.groupValues[4] + "." + m.groupValues[5]
+            // «месяц день, год» (с запятой, США) или «день месяц год» (региональный)
+            val usFormat = m.value.contains(',')
+            val day = if (usFormat) m.groupValues[4] else m.groupValues[3]
+            val month = if (usFormat) m.groupValues[3] else m.groupValues[4]
+            val date = day + "." + month + "." + m.groupValues[5]
             val time = m.groupValues[1]
             if (addr.isNotEmpty()) {
                 out.add(PanelEvent(
@@ -222,7 +231,7 @@ object PanelDecoder {
                     label2 = seg(line1, 61, 80),
                     zoneLabel = seg(v, 0, 20),
                     zone = ZONE.find(v.take(30))?.value ?: "",
-                    devType = seg(v, 28, 42),
+                    devType = seg(v, 28, minOf(42, m.range.first)),
                     address = addr,
                     node = "",
                     date = date, time = time
