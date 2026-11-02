@@ -148,7 +148,7 @@ object I18n {
     /** Текст панели (иврит/англ.) + перевод, если интерфейс русский. */
     fun panel(s: String): String {
         if (he || s.isEmpty()) return s
-        val ru = PanelDecoder.ru(s) ?: return s
+        val ru = PanelDecoder.ru(s) ?: AutoTr.get(s) ?: return s
         return "$s — $ru"
     }
 

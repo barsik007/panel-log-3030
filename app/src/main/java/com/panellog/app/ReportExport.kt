@@ -186,7 +186,7 @@ object PeriodExport {
 
     private fun problem(f: Fault, heOnly: Boolean): String {
         if (heOnly) return f.problem
-        val ru = PanelDecoder.ru(f.problem) ?: return f.problem
+        val ru = PanelDecoder.ru(f.problem) ?: AutoTr.get(f.problem) ?: return f.problem
         return "${f.problem} ($ru)"
     }
 
@@ -197,8 +197,10 @@ object PeriodExport {
         return if (heOnly || r == null) h else "$h ($r)"
     }
 
-    private fun place(f: Fault): String =
-        if (f.isSystem) f.node else listOf(f.label, f.label2).filter { it.isNotEmpty() }.joinToString(" · ")
+    private fun place(f: Fault, heOnly: Boolean): String {
+        val parts = if (f.isSystem) listOf(f.node) else listOf(f.label, f.label2)
+        return parts.filter { it.isNotEmpty() }.joinToString(" · ") { if (heOnly) it else AutoTr.withRu(it) }
+    }
 
     private fun done(f: Fault, store: Store, heOnly: Boolean): String {
         val parts = ArrayList<String>()
@@ -230,7 +232,7 @@ object PeriodExport {
                 sb.append(i + 1).append(". ")
                 if (!f.isSystem) sb.append(f.address).append(" · ")
                 sb.append(type(f, heOnly)).append(" — ").append(problem(f, heOnly)).append('\n')
-                val p = place(f)
+                val p = place(f, heOnly)
                 if (p.isNotEmpty()) sb.append("    ").append(p).append('\n')
                 val dn = done(f, store, heOnly)
                 if (dn.isNotEmpty()) sb.append("    ✔ ").append(dn).append('\n')
@@ -339,7 +341,7 @@ object PeriodExport {
                     if (f.isSystem) "—" else f.address + (if (f.zone.isNotEmpty()) "\n" + f.zone else ""),
                     type(f, heOnly),
                     problem(f, heOnly) + (if (f.recur > 0) "\n🔁 ×" + f.recur else ""),
-                    place(f).ifEmpty { "—" },
+                    place(f, heOnly).ifEmpty { "—" },
                     done(f, store, heOnly).ifEmpty { "" }
                 )
                 val paints = listOf(cellPaint, monoPaint, cellPaint, cellPaint, cellPaint, cellPaint)

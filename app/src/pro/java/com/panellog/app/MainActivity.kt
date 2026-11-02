@@ -123,6 +123,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         store = Store(this)
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         I18n.he = prefs().getString("lang", "ru") == "he"
+        AutoTr.init(this)
+        AutoTr.onUpdate = { if (scr == Scr.SITE) fillFaultList() }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val filter = IntentFilter().apply {
             addAction(ACTION_USB_PERMISSION)
@@ -432,6 +434,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             list.addView(tv(I18n.t("noFaults"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
             return
         }
+        if (!I18n.he) AutoTr.request(faults.flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val showPanel = panelSel == null && panels.size > 1
         for (f in faults) list.addView(faultRow(f, lastTsBy[f.panelId] ?: 0L, countBy[f.panelId] ?: 0,
             if (showPanel) pName[f.panelId] ?: "" else ""))
@@ -444,13 +447,25 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             else f.address + (if (f.devType.isNotEmpty()) " · " + I18n.devType(f.devType) else ""))
         c.addView(tv(head, 15f, true))
         c.addView(tv(I18n.panel(f.problem), 14f))
-        val place = listOf(f.label, f.label2).filter { it.isNotEmpty() }.joinToString(" · ")
-        if (place.isNotEmpty()) c.addView(tv(place, 14f, color = Color.rgb(60, 66, 75)))
+        addPlace(c, if (f.isSystem) listOf() else listOf(f.label, f.label2), 15f)
         val badges = statusBadges(f, lastTs, logCount)
         if (badges.isNotEmpty()) c.addView(tv(badges, 13f, color = Color.rgb(30, 63, 138)).apply { setPadding(0, dp(4), 0, 0) })
         warning(f)?.let { c.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
         c.setOnClickListener { faultId = f.id; go(Scr.FAULT) }
         return c
+    }
+
+    /** Место установки жирным; при русском интерфейсе — строкой ниже автоперевод. */
+    private fun addPlace(box: LinearLayout, parts: List<String>, size: Float) {
+        val p = parts.filter { it.isNotEmpty() }
+        if (p.isEmpty()) return
+        box.addView(tv(p.joinToString(" · "), size, true))
+        if (!I18n.he) {
+            val ru = p.mapNotNull { AutoTr.get(it) }
+            if (ru.isNotEmpty()) box.addView(tv(ru.joinToString(" · "), size - 1f, color = Color.rgb(85, 93, 104)).apply {
+                setTypeface(typeface, Typeface.ITALIC)
+            })
+        }
     }
 
     private fun statusBadges(f: Fault, lastTs: Long, logCount: Int): String {
@@ -489,8 +504,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             info.addView(tv(I18n.t("type") + ": " + I18n.devType(f.devType), 14f))
             if (f.zone.isNotEmpty()) info.addView(tv(I18n.t("zone") + ": " + f.zone, 14f))
         }
-        val place = if (f.isSystem) f.node else listOf(f.label, f.label2).filter { it.isNotEmpty() }.joinToString(" · ")
-        if (place.isNotEmpty()) info.addView(tv(I18n.t("place") + ": " + place, 14f))
+        val placeParts = if (f.isSystem) listOf(f.node) else listOf(f.label, f.label2)
+        if (!I18n.he) AutoTr.request(placeParts + f.problem)
+        addPlace(info, placeParts, 16f)
         info.addView(tv(I18n.t("firstSeen") + ": " + fmt(f.firstSeen) + "   " + I18n.t("lastSeen") + ": " + fmt(f.lastSeen), 13f, color = Color.DKGRAY))
         val badges = statusBadges(f, logs.firstOrNull()?.ts ?: 0, logs.size)
         info.addView(tv(if (f.active) I18n.t("stActive") + (if (badges.isNotEmpty()) "  $badges" else "") else badges, 13f, color = Color.rgb(30, 63, 138)))
@@ -953,6 +969,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     private fun reportMenu(panelId: String?, fromFor: (List<LogRec>) -> Long) {
         val sid = siteId ?: return
+        if (!I18n.he) AutoTr.request(store.faults(sid).flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val r = store.period(sid, panelId, fromFor) ?: run { toast(I18n.t("noLogsForReport")); return }
         // Иврит в настройках — только иврит; русский — выбор: иврит или иврит + перевод
         val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
