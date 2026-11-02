@@ -96,7 +96,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private var captureCounterView: TextView? = null
     private var capturePreview: TextView? = null
     private var captureConnectBtn: Button? = null
-    private val captureRender = Runnable { updateCaptureViews() }
+    private var renderScheduled = false
+    private var lastEventCount = 0
+    private val captureRender = Runnable { renderScheduled = false; updateCaptureViews() }
 
     // список неисправностей объекта (перерисовка при поиске)
     private var faultListBox: LinearLayout? = null
@@ -649,6 +651,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     private fun startCapture() {
         captureBytes.reset()
+        lastEventCount = 0
         captureStatus = ""
         go(Scr.CAPTURE)
         connect()
@@ -696,6 +699,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val bytes = captureBytes.toByteArray()
         val d = PanelDecoder.decode(bytes)
         val events = if (d.graphic) PanelDecoder.parse(d.visualLines) else emptyList()
+        lastEventCount = events.size
         captureCounterView?.text = I18n.f("received", bytes.size, events.size)
         capturePreview?.text = events.takeLast(60).joinToString("\n") { e ->
             (if (e.isSystem) I18n.t("system") else e.address) + "  " + e.problem +
@@ -836,8 +840,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     override fun onNewData(data: ByteArray) {
         mainHandler.post {
             if (captureBytes.size() < MAX_CAPTURE_BYTES) captureBytes.write(data)
-            mainHandler.removeCallbacks(captureRender)
-            mainHandler.postDelayed(captureRender, 400)
+            // байты — сразу, на каждый пакет; разбор событий — не чаще двух раз в секунду
+            captureCounterView?.text = I18n.f("received", captureBytes.size(), lastEventCount)
+            if (!renderScheduled) { renderScheduled = true; mainHandler.postDelayed(captureRender, 500) }
         }
     }
 
