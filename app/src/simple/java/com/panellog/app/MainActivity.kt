@@ -189,13 +189,15 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
         ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        // Программу открыл сам Android при подключении переходника — сразу открываем порт
+        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) mainHandler.post { if (port == null) connect() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
             refreshDevices()
-            setStatus("adapterFound", false)
+            if (port == null) connect() else setStatus("adapterFound", false)
         }
     }
 

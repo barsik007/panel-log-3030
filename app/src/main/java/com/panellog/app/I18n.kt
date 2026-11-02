@@ -139,7 +139,10 @@ object I18n {
         "saveTo" to ("В «%s»" to "ל«%s»"),
         "allPanels" to ("Все панели (רכזות)" to "כל הרכזות"),
         "reportScope" to ("Отчёт по панелям" to "דוח לפי רכזות"),
-        "panelLabel" to ("Панель" to "רכזת")
+        "panelLabel" to ("Панель" to "רכזת"),
+        "autoCapQ" to ("Переходник подключён. Снять лог на объекте «%s»?" to "המתאם חובר. לקרוא נתונים באתר «%s»?"),
+        "otherSite" to ("Другой объект" to "אתר אחר"),
+        "pickSite" to ("Переходник подключён — выберите объект" to "המתאם חובר — בחר אתר")
     )
 
     fun t(key: String): String = T[key]?.let { if (he) it.second else it.first } ?: key

@@ -134,11 +134,36 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         }
         ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         render()
+        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) mainHandler.post { autoCapture() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED && scr == Scr.CAPTURE && port == null) connect()
+        if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) autoCapture()
+    }
+
+    /** Переходник вставлен: сразу к снятию лога (на открытом или последнем объекте). */
+    private fun autoCapture() {
+        if (port != null) return
+        when (scr) {
+            Scr.CAPTURE -> connect()
+            Scr.HOME -> {
+                val last = prefs().getString("lastSiteId", null)?.let { store.site(it) }
+                if (last == null) { toast(I18n.t("pickSite")); return }
+                AlertDialog.Builder(this).setMessage(I18n.f("autoCapQ", last.name))
+                    .setPositiveButton(I18n.t("yes")) { _, _ ->
+                        siteId = last.id; panelSel = null; tab = 0; searchText = ""
+                        choosePanelThen { startCapture() }
+                    }
+                    .setNegativeButton(I18n.t("otherSite")) { _, _ -> toast(I18n.t("pickSite")) }
+                    .show()
+            }
+            else -> {
+                if (siteId == null) return
+                saveCommentIfAny()
+                choosePanelThen { startCapture() }
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -274,7 +299,11 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             val info = (if (s.lastLogTs > 0) I18n.t("lastLog") + " " + fmt(s.lastLogTs) else I18n.t("noLogs")) +
                 " · " + I18n.f("activeN", s.activeCount)
             c.addView(tv(info, 13f, color = Color.rgb(85, 93, 104)))
-            c.setOnClickListener { siteId = s.id; tab = 0; searchText = ""; panelSel = null; go(Scr.SITE) }
+            c.setOnClickListener {
+                siteId = s.id; tab = 0; searchText = ""; panelSel = null
+                prefs().edit().putString("lastSiteId", s.id).apply()
+                go(Scr.SITE)
+            }
             c.setOnLongClickListener { siteMenu(s); true }
             box.addView(c)
         }
