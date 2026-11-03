@@ -376,11 +376,15 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         chips.addView(chip(I18n.t("newPanel"), false, { panelDialog(null) }), chipLp())
         box.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) })
 
+        // 2×2: снять лог · как есть / отчёт · логи для Claude
         box.addView(row(
             btn(I18n.t("takeLog"), true) { choosePanelThen { startCapture() } },
-            btn(I18n.t("send")) { sendMenu() },
-            btn(I18n.t("logs")) { go(Scr.LOGS) }
+            btn(I18n.t("sendAsIs")) { asIsMenu() }
         ).apply { setPadding(0, dp(8), 0, 0) })
+        box.addView(row(
+            btn(I18n.t("report")) { sendMenu() },
+            btn(I18n.t("logsClaude")) { go(Scr.LOGS) }
+        ))
 
         val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
         val faults = store.faults(s.id).filter { panelSel == null || it.panelId == panelSel }
@@ -846,6 +850,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val s = siteId?.let { store.site(it) } ?: return homeView().also { scr = Scr.HOME }
         val (sv, box) = page()
         box.addView(tv(I18n.t("logsTitle") + " · " + s.name, 20f, true))
+        box.addView(tv(I18n.t("logsClaudeHint"), 13f, color = Color.DKGRAY).apply { setPadding(0, dp(4), 0, dp(4)) })
         val pName = store.panels(s.id).associate { it.id to it.name }
         val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
         if (logs.isEmpty()) box.addView(tv(I18n.t("noLogsYet"), 14f, color = Color.DKGRAY))
@@ -860,17 +865,17 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     }
 
     private fun logMenu(l: LogRec) {
-        val items = arrayOf(I18n.t("paperView"), I18n.t("reportFrom"), I18n.t("logFile"), I18n.t("deleteLog"))
+        val items = arrayOf(I18n.t("logFile"), I18n.t("paperView"), I18n.t("reportFrom"), I18n.t("deleteLog"))
         AlertDialog.Builder(this).setTitle(fmt(l.ts)).setItems(items) { _, w ->
             when (w) {
-                0 -> {
+                0 -> shareLogFile(l)
+                1 -> {
                     val raw = try { File(l.raw).readBytes() } catch (_: Exception) { ByteArray(0) }
                     val d = PanelDecoder.decode(raw)
                     paperText = (if (d.graphic) PanelDecoder.logicalLines(d.visualLines) else d.visualLines).joinToString("\n")
                     go(Scr.PAPER)
                 }
-                1 -> reportMenu(l.panelId) { _ -> l.ts }
-                2 -> shareLogFile(l)
+                2 -> reportMenu(l.panelId) { _ -> l.ts }
                 3 -> AlertDialog.Builder(this).setMessage(I18n.t("deleteLog") + "?")
                     .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteLog(l); render() }
                     .setNegativeButton(I18n.t("cancel"), null).show()
@@ -931,6 +936,41 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun appVersion(): String = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (_: Exception) { "?" }
 
     // ================================================================ Отчёты
+
+    /** «Отправить как есть»: последний лог каждой выбранной панели — ровно то, что показала панель, без комментариев. */
+    private fun asIsMenu() {
+        val sid = siteId ?: return
+        val s = store.site(sid) ?: return
+        val panels = store.panels(sid).filter { panelSel == null || it.id == panelSel }
+        val logs = store.logs(sid)
+        val parts = panels.mapNotNull { p ->
+            val l = logs.filter { it.panelId == p.id }.maxByOrNull { it.ts } ?: return@mapNotNull null
+            val raw = try { File(l.raw).readBytes() } catch (_: Exception) { return@mapNotNull null }
+            val d = PanelDecoder.decode(raw)
+            if (!d.graphic) null else p to PanelDecoder.parse(d.visualLines)
+        }
+        if (parts.isEmpty()) { toast(I18n.t("noLogsForReport")); return }
+        val title = { p: Panel -> s.name + (if (store.panels(sid).size > 1) " · " + p.name else "") }
+        val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
+            else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
+        AlertDialog.Builder(this).setTitle(I18n.t("sendAsIs"))
+            .setItems(opts.map { I18n.t(it.first) }.toTypedArray()) { _, w ->
+                val (key, he) = opts[w]
+                if (key.startsWith("wa")) {
+                    shareWhatsapp(parts.joinToString("\n\n— — —\n\n") { (p, ev) -> ReportExport.whatsappText(ev, title(p), he) })
+                    return@setItems
+                }
+                try {
+                    val events = parts.flatMap { it.second }
+                    val name = if (parts.size == 1) title(parts[0].first) else s.name + " · " + parts.joinToString(", ") { it.first.name }
+                    val safe = s.name.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(40)
+                    val out = File(store.dataDir(), "G1_${safe}_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date()) +
+                        (if (he) "_he" else "_he_ru") + "_panel.pdf")
+                    ReportExport.writePdf(events, out, name, he)
+                    if (key.startsWith("pdf")) shareFile(out, "application/pdf") else saveToDownloads(out, out.name, "application/pdf")
+                } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
+            }.show()
+    }
 
     /** «Отправить»: отчёт за сегодня (а если сегодня логов не было — по последнему логу). */
     private fun sendMenu() {
