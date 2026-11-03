@@ -56,5 +56,4 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("com.github.mik3y:usb-serial-for-android:3.8.1")
-    implementation("com.google.mlkit:translate:17.0.3")
 }
