@@ -466,7 +466,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             q.isEmpty() || listOf(it.address, it.zone, it.label, it.label2, it.problem, it.node, it.devType,
                 PanelDecoder.ru(it.problem) ?: "", store.actionText(it.action), it.comment)
                 .any { s -> s.lowercase().contains(q) }
-        }.let { fs -> if (tab == 1) fs.sortedByDescending { it.resolvedTs } else fs }
+        }.let { fs -> if (tab == 1) fs.sortedByDescending { it.resolvedTs } else fs.sortedBy { it.active && it.repaired } }
         if (faults.isEmpty()) {
             list.addView(tv(I18n.t("noFaults"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
             return
@@ -490,6 +490,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         warning(f)?.let { c.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
         c.setOnClickListener { faultId = f.id; go(Scr.FAULT) }
         if (f.parked) c.alpha = 0.4f  // «не актуально» — бледная
+        if (f.active && f.repaired) {  // «Починил» — бледно-розовая, не бросается в глаза
+            c.background = rounded(Color.rgb(253, 232, 239), 12, Color.rgb(244, 200, 215))
+            c.alpha = 0.6f
+        }
         return c
     }
 
@@ -511,6 +515,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (!f.active) b.add(I18n.f("stFixed", fmtD(f.resolvedTs)))
         else if (logCount > 1 && f.firstSeen == lastTs) b.add(I18n.t("stNew"))
         if (f.recur > 0) b.add(I18n.f("stRecur", f.recur))
+        if (f.active && f.repaired) b.add(I18n.f("stRepaired", fmtD(f.fixedTs)))
         if (f.parked) b.add(I18n.t("stParked"))
         if (f.billable) b.add(I18n.t("stBill"))
         if (f.action.isNotEmpty()) b.add("✔ " + store.actionText(f.action))
@@ -548,6 +553,13 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         info.addView(tv(if (f.active) I18n.t("stActive") + (if (badges.isNotEmpty()) "  $badges" else "") else badges, 13f, color = Color.rgb(30, 63, 138)))
         warning(f)?.let { info.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
         box.addView(info)
+
+        // Починил (останется в отчёте как устранённая; панель подтвердит при следующем логе)
+        if (f.active) box.addView(CheckBox(this).apply {
+            text = "🔧 " + I18n.t("repaired"); textSize = 16f; isChecked = f.repaired
+            setPadding(0, dp(6), 0, dp(6))
+            setOnCheckedChangeListener { _, ch -> store.setRepaired(f.id, ch) }
+        })
 
         // Не актуально (на утверждении / согласовании)
         box.addView(CheckBox(this).apply {
@@ -730,6 +742,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val msg = StringBuilder(I18n.t("saved")).append(" · ").append(before?.name ?: "").append("\n\n")
         if (r.first) msg.append(I18n.f("firstLogBody", r.total))
         else msg.append(I18n.f("compareBody", r.fixed, r.added, r.recurred, r.remaining))
+        if (r.notConfirmed > 0) msg.append("\n\n").append(I18n.f("notConfirmed", r.notConfirmed))
         if (before != null && before.detected.isNotEmpty() && r.panelName.isNotEmpty() && before.detected != r.panelName)
             msg.append("\n\n").append(I18n.f("otherPanel", r.panelName, before.detected))
         tab = 0; searchText = ""; panelSel = pid
@@ -1131,7 +1144,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val go = { reportMenu(panelSel, true) { logs -> if (logs.any { it.ts >= dayStart }) dayStart else logs.last().ts } }
         // Главное в отчёте — причины по оставшимся неисправностям: напомнить, если не заполнено
         val noComment = store.faults(sid).count {
-            it.active && (panelSel == null || it.panelId == panelSel) && it.comment.isBlank() && it.action.isEmpty()
+            it.active && !it.repaired && (panelSel == null || it.panelId == panelSel) && it.comment.isBlank() && it.action.isEmpty()
         }
         if (noComment == 0) { go(); return }
         AlertDialog.Builder(this).setMessage(I18n.f("noCommentQ", noComment))

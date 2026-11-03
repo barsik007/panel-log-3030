@@ -30,8 +30,11 @@ data class Fault(
     val recur: Int, val billable: Boolean, val action: String, val comment: String,
     val panelId: String,
     /** «Не актуально»: на утверждении / в согласовании — не трогать. */
-    val parked: Boolean = false
+    val parked: Boolean = false,
+    /** «Починил»: отмечено вручную (время); подтвердится, когда панель перестанет её показывать. */
+    val fixedTs: Long = 0
 ) {
+    val repaired: Boolean get() = fixedTs > 0
     val isSystem: Boolean get() = address.isEmpty()
     val loop: String get() = Regex("L(\\d{2})").find(address)?.groupValues?.get(1) ?: ""
 }
@@ -46,7 +49,8 @@ data class ActionDef(val id: String, val he: String, val ru: String, val billabl
 data class CompareResult(
     val logId: String, val first: Boolean,
     val fixed: Int, val added: Int, val recurred: Int, val remaining: Int, val total: Int,
-    val panelName: String
+    val panelName: String,
+    val notConfirmed: Int = 0
 )
 
 /** Раздел отчёта по одной панели (רכזת). */
@@ -64,13 +68,13 @@ data class PeriodReport(val site: Site, val from: Long, val to: Long, val panels
 }
 
 /** Локальная база: объекты, логи, неисправности, история, фото. ID — UUID (готово к синхронизации). */
-class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) {
+class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE sites(id TEXT PRIMARY KEY, name TEXT, address TEXT, note TEXT, panel TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE panels(id TEXT PRIMARY KEY, site_id TEXT, name TEXT, detected TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE logs(id TEXT PRIMARY KEY, site_id TEXT, ts INTEGER, raw TEXT, events INTEGER, panel_id TEXT)")
-        db.execSQL("CREATE TABLE faults(id TEXT PRIMARY KEY, site_id TEXT, fkey TEXT, address TEXT, zone TEXT, dev_type TEXT, problem TEXT, label TEXT, label2 TEXT, node TEXT, first_seen INTEGER, last_seen INTEGER, active INTEGER, resolved_ts INTEGER, recur INTEGER, billable INTEGER, action TEXT, comment TEXT, updated INTEGER, panel_id TEXT, parked INTEGER DEFAULT 0)")
+        db.execSQL("CREATE TABLE faults(id TEXT PRIMARY KEY, site_id TEXT, fkey TEXT, address TEXT, zone TEXT, dev_type TEXT, problem TEXT, label TEXT, label2 TEXT, node TEXT, first_seen INTEGER, last_seen INTEGER, active INTEGER, resolved_ts INTEGER, recur INTEGER, billable INTEGER, action TEXT, comment TEXT, updated INTEGER, panel_id TEXT, parked INTEGER DEFAULT 0, fixed_ts INTEGER DEFAULT 0)")
         db.execSQL("CREATE TABLE log_faults(log_id TEXT, fault_id TEXT)")
         db.execSQL("CREATE TABLE history(id TEXT PRIMARY KEY, fault_id TEXT, ts INTEGER, kind TEXT, text TEXT)")
         db.execSQL("CREATE TABLE photos(id TEXT PRIMARY KEY, fault_id TEXT, path TEXT, ts INTEGER)")
@@ -100,6 +104,8 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
         }
         // v2 → v3: отметка «не актуально»
         if (oldVersion < 3) db.execSQL("ALTER TABLE faults ADD COLUMN parked INTEGER DEFAULT 0")
+        // v3 → v4: отметка «Починил»
+        if (oldVersion < 4) db.execSQL("ALTER TABLE faults ADD COLUMN fixed_ts INTEGER DEFAULT 0")
     }
 
     private fun uuid() = UUID.randomUUID().toString()
@@ -246,7 +252,7 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
 
         val db = writableDatabase
         val first = panelLogs(panelId).isEmpty()
-        var fixed = 0; var added = 0; var recurred = 0; var remaining = 0
+        var fixed = 0; var added = 0; var recurred = 0; var remaining = 0; var notConfirmed = 0
         db.beginTransaction()
         try {
             db.insert("logs", null, ContentValues().apply {
@@ -271,6 +277,11 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
                     faultId = f.id
                     val cv = ContentValues().apply {
                         put("last_seen", ts); put("label", e.label); put("label2", e.label2); put("zone", e.zone); put("dev_type", e.devType)
+                    }
+                    if (f.fixedTs in 1 until ts) {
+                        // отметили «Починил», а панель всё ещё показывает — отметку снимаем
+                        cv.put("fixed_ts", 0)
+                        if (f.active) { addHistory(faultId, ts, "repairNotConfirmed", ""); notConfirmed++ }
                     }
                     if (!f.active) {
                         cv.put("active", 1); cv.put("resolved_ts", 0); cv.put("recur", f.recur + 1); cv.put("updated", ts)
@@ -299,7 +310,7 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
         if (p != null && p.detected.isEmpty() && panel.isNotEmpty()) {
             db.update("panels", ContentValues().apply { put("detected", panel) }, "id=?", arrayOf(panelId))
         }
-        return CompareResult(logId, first, fixed, added, recurred, remaining, byKey.size, panel)
+        return CompareResult(logId, first, fixed, added, recurred, remaining, byKey.size, panel, notConfirmed)
     }
 
     // ---------------------------------------------------------------- Неисправности
@@ -309,10 +320,10 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
         c.getString(6) ?: "", c.getString(7) ?: "", c.getString(8) ?: "", c.getString(9) ?: "",
         c.getLong(10), c.getLong(11), c.getInt(12) == 1, c.getLong(13), c.getInt(14), c.getInt(15) == 1,
         c.getString(16) ?: "", c.getString(17) ?: "", c.getString(18) ?: "",
-        c.getInt(19) == 1
+        c.getInt(19) == 1, c.getLong(20)
     )
 
-    private val FCOLS = "id,site_id,fkey,address,zone,dev_type,problem,label,label2,node,first_seen,last_seen,active,resolved_ts,recur,billable,action,comment,panel_id,parked"
+    private val FCOLS = "id,site_id,fkey,address,zone,dev_type,problem,label,label2,node,first_seen,last_seen,active,resolved_ts,recur,billable,action,comment,panel_id,parked,fixed_ts"
 
     fun faults(siteId: String): List<Fault> =
         query("SELECT $FCOLS FROM faults WHERE site_id=?", arrayOf(siteId)) { faultFrom(it) }
@@ -348,6 +359,12 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
         addHistory(faultId, now(), if (b) "parked" else "unparked", "")
     }
 
+    fun setRepaired(faultId: String, b: Boolean) {
+        val t = now()
+        writableDatabase.update("faults", ContentValues().apply { put("fixed_ts", if (b) t else 0L); put("updated", t) }, "id=?", arrayOf(faultId))
+        addHistory(faultId, t, if (b) "repaired" else "unrepaired", "")
+    }
+
     fun setComment(faultId: String, text: String) {
         writableDatabase.update("faults", ContentValues().apply { put("comment", text); put("updated", now()) }, "id=?", arrayOf(faultId))
         if (text.isNotBlank()) addHistory(faultId, now(), "comment", text)
@@ -357,9 +374,9 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
     fun notesJson(panelId: String): JSONArray {
         val a = JSONArray()
         for (f in query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }) {
-            if (f.comment.isBlank() && f.action.isEmpty() && !f.billable && !f.parked) continue
+            if (f.comment.isBlank() && f.action.isEmpty() && !f.billable && !f.parked && !f.repaired) continue
             a.put(JSONObject().put("key", f.key).put("comment", f.comment).put("action", f.action)
-                .put("billable", f.billable).put("parked", f.parked))
+                .put("billable", f.billable).put("parked", f.parked).put("fixed", f.repaired && f.active))
         }
         return a
     }
@@ -385,6 +402,7 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
             if (act.isNotEmpty() && f.action.isEmpty()) { setAction(f.id, act, null); ch = true }
             if (n.optBoolean("billable") && !f.billable) { setBillable(f.id, true); ch = true }
             if (n.optBoolean("parked") && !f.parked) { setParked(f.id, true); ch = true }
+            if (n.optBoolean("fixed") && !f.repaired && f.active) { setRepaired(f.id, true); ch = true }
             if (ch) changed++
         }
         return changed
@@ -431,9 +449,11 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
             for (l in inRange) union.addAll(logFaultIds(l.id))
             val billable = list(union.filter { byId[it]?.billable == true })
             val billIds = billable.map { it.id }.toSet()
-            val fixed = list(union.filter { it !in b && it !in billIds })
-            val added = if (inRange.size > 1) list(b.filter { it !in a && it !in billIds }) else emptyList()
-            val remaining = list(b.filter { (inRange.size == 1 || it in a) && it !in billIds })
+            // «Починил» (ещё видна в панели, но отмечена) — считается устранённой
+            val rep = union.filter { byId[it]?.let { f -> f.active && f.repaired } == true }.toSet()
+            val fixed = list(union.filter { (it !in b || it in rep) && it !in billIds })
+            val added = if (inRange.size > 1) list(b.filter { it !in a && it !in billIds && it !in rep }) else emptyList()
+            val remaining = list(b.filter { (inRange.size == 1 || it in a) && it !in billIds && it !in rep })
             sections.add(PanelSection(p, inRange.first().ts, inRange.last().ts, inRange.size, billable, fixed, added, remaining))
         }
         if (sections.isEmpty()) return null

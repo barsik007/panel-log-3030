@@ -179,10 +179,10 @@ object PeriodExport {
 
     /** Главное — что осталось (с причинами); затем коротко — что устранено. */
     private fun openOf(r: PanelSection): List<Fault> =
-        (r.billable.filter { it.active } + r.added + r.remaining)
+        (r.billable.filter { it.active && !it.repaired } + r.added + r.remaining)
             .sortedWith(compareBy<Fault>({ !it.billable }, { it.isSystem }, { it.address }))
     private fun fixedOf(r: PanelSection): List<Fault> =
-        (r.fixed + r.billable.filter { !it.active }).sortedWith(compareBy<Fault>({ it.isSystem }, { it.address }))
+        (r.fixed + r.billable.filter { !it.active || it.repaired }).sortedWith(compareBy<Fault>({ it.isSystem }, { it.address }))
 
     private fun sections(r: PanelSection) = listOf(
         Sec("תקלות שנשארו פתוחות", "Остались неисправности", openOf(r)),
@@ -192,6 +192,7 @@ object PeriodExport {
     /** Пометки в строке: ₪ к оплате, 🆕 новая, 🔁 повторная. */
     private fun tags(f: Fault, r: PanelSection, heOnly: Boolean): String {
         val t = ArrayList<String>()
+        if (f.repaired) t.add(if (heOnly) "🔧 תוקן ע״י הטכנאי" else "🔧 תוקן ע״י הטכנאי (починено техником)")
         if (f.billable) t.add(if (heOnly) "₪ לתשלום" else "₪ לתשלום (к оплате)")
         if (r.added.any { it.id == f.id }) t.add(if (heOnly) "🆕 חדש" else "🆕 חדש (новая)")
         if (f.recur > 0) t.add("🔁 ×" + f.recur)
