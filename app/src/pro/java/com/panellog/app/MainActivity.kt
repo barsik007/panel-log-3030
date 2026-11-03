@@ -378,7 +378,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
         box.addView(row(
             btn(I18n.t("takeLog"), true) { choosePanelThen { startCapture() } },
-            btn(I18n.t("report")) { periodMenu() },
+            btn(I18n.t("send")) { sendMenu() },
             btn(I18n.t("logs")) { go(Scr.LOGS) }
         ).apply { setPadding(0, dp(8), 0, 0) })
 
@@ -510,10 +510,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     }
 
     private fun warning(f: Fault): String? {
-        val doneActions = setOf("fixed", "replaced", "cleaned", "base", "wiring")
-        if (f.active && (f.action in doneActions || f.action.startsWith("custom:")))
-            return I18n.f("warnStill", store.actionText(f.action))
-        if (!f.active && f.action.isEmpty()) return I18n.t("warnNoAction")
+        if (!f.active && f.comment.isBlank() && f.action.isEmpty()) return I18n.t("warnNoAction")
         return null
     }
 
@@ -521,6 +518,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     private var commentEdit: EditText? = null
 
+    /** Карточка: сведения панели, «к оплате», строка «что сделано», фото. */
     private fun faultView(): View {
         val f = faultId?.let { store.fault(it) } ?: return siteView().also { scr = Scr.SITE }
         val (sv, box) = page()
@@ -531,67 +529,36 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         box.addView(tv(head, 22f, true))
         box.addView(tv(I18n.panel(f.problem), 17f, true).apply { setPadding(0, dp(4), 0, 0) })
         val info = card()
-        if (!f.isSystem) {
-            info.addView(tv(I18n.t("type") + ": " + I18n.devType(f.devType), 14f))
-            if (f.zone.isNotEmpty()) info.addView(tv(I18n.t("zone") + ": " + f.zone, 14f))
-        }
         val placeParts = if (f.isSystem) listOf(f.node) else listOf(f.label, f.label2)
         if (!I18n.he) AutoTr.request(placeParts + f.problem)
         addPlace(info, placeParts, 16f)
-        info.addView(tv(I18n.t("firstSeen") + ": " + fmt(f.firstSeen) + "   " + I18n.t("lastSeen") + ": " + fmt(f.lastSeen), 13f, color = Color.DKGRAY))
+        if (!f.isSystem) {
+            info.addView(tv(I18n.t("type") + ": " + I18n.devType(f.devType) +
+                (if (f.zone.isNotEmpty()) "   " + I18n.t("zone") + ": " + f.zone else ""), 14f))
+        }
         val badges = statusBadges(f, logs.firstOrNull()?.ts ?: 0, logs.size)
         info.addView(tv(if (f.active) I18n.t("stActive") + (if (badges.isNotEmpty()) "  $badges" else "") else badges, 13f, color = Color.rgb(30, 63, 138)))
         warning(f)?.let { info.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
         box.addView(info)
 
-        // Что сделано
-        box.addView(tv(I18n.t("actions"), 15f, true).apply { setPadding(0, dp(12), 0, dp(2)) })
-        val acts = store.actions()
-        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        var line: LinearLayout? = null
-        acts.forEachIndexed { i, a ->
-            if (i % 2 == 0) { line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }; grid.addView(line) }
-            val sel = f.action == a.id
-            val b = Button(this).apply {
-                text = (if (a.billable) "₪ " else "") + a.text(); isAllCaps = false; textSize = 13f
-                background = rounded(if (sel) Color.rgb(21, 24, 28) else Color.WHITE, 10, Color.rgb(195, 201, 209))
-                setTextColor(if (sel) Color.WHITE else Color.rgb(21, 24, 28))
-                setOnClickListener {
-                    saveCommentIfAny()
-                    store.setAction(f.id, a.id, if (a.billable) true else null); render()
-                }
-            }
-            line!!.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) })
-        }
-        if (acts.size % 2 == 1) line?.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        box.addView(grid)
-        val customSel = f.action.startsWith("custom:")
-        box.addView(row(
-            btn((if (customSel) "✔ " + f.action.removePrefix("custom:") else I18n.t("other"))) {
-                val e = input(I18n.t("enterText"), if (customSel) f.action.removePrefix("custom:") else "")
-                AlertDialog.Builder(this).setTitle(I18n.t("other")).setView(dialogBox().apply { addView(e) })
-                    .setPositiveButton(I18n.t("ok")) { _, _ ->
-                        val t = e.text.toString().trim()
-                        if (t.isNotEmpty()) { saveCommentIfAny(); store.setAction(f.id, "custom:$t", null); render() }
-                    }.setNegativeButton(I18n.t("cancel"), null).show()
-            },
-            btn(I18n.t("clearAction")) { saveCommentIfAny(); store.setAction(f.id, "", null); render() }
-        ))
-
         // К оплате
         box.addView(CheckBox(this).apply {
-            text = "₪ " + I18n.t("billable"); textSize = 15f; isChecked = f.billable
+            text = "₪ " + I18n.t("billable"); textSize = 16f; isChecked = f.billable
+            setPadding(0, dp(6), 0, dp(6))
             setOnCheckedChangeListener { _, ch -> store.setBillable(f.id, ch) }
         })
 
-        // Комментарий
-        box.addView(tv(I18n.t("comment"), 15f, true).apply { setPadding(0, dp(8), 0, 0) })
-        val ce = input(I18n.t("comment"), f.comment, true).apply { tag = f.comment }
+        // Что сделано / комментарий
+        box.addView(tv(I18n.t("doneComment"), 15f, true).apply { setPadding(0, dp(6), 0, 0) })
+        val ce = input(I18n.t("doneComment"), f.comment, true).apply { tag = f.comment; minLines = 3 }
         commentEdit = ce
         box.addView(ce)
+        box.addView(btn(I18n.t("ok"), true) { saveCommentIfAny(); toast(I18n.t("savedOk")); render() }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply { topMargin = dp(4) }
+        })
 
         // Фото
-        box.addView(tv(I18n.t("photos"), 15f, true).apply { setPadding(0, dp(10), 0, dp(4)) })
+        box.addView(tv(I18n.t("photos"), 15f, true).apply { setPadding(0, dp(12), 0, dp(4)) })
         val strip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         strip.addView(btn(I18n.t("addPhoto")) { takePhoto(f.id) }, LinearLayout.LayoutParams(dp(96), dp(96)))
         for (p in store.photos(f.id)) {
@@ -608,21 +575,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             strip.addView(iv, LinearLayout.LayoutParams(dp(96), dp(96)).apply { marginStart = dp(6) })
         }
         box.addView(HorizontalScrollView(this).apply { addView(strip) })
-
-        // История
-        box.addView(tv(I18n.t("history"), 15f, true).apply { setPadding(0, dp(12), 0, dp(2)) })
-        for (h in store.history(f.id)) {
-            val what = when (h.kind) {
-                "appeared" -> I18n.t("hAppeared")
-                "resolved" -> I18n.t("hResolved")
-                "recurred" -> I18n.t("hRecurred")
-                "action" -> I18n.t("hAction") + ": " + (if (h.text.isEmpty()) "—" else store.actionText(h.text))
-                "comment" -> I18n.t("hComment") + ": " + h.text
-                "photo" -> I18n.t("hPhoto")
-                else -> h.kind
-            }
-            box.addView(tv(fmt(h.ts) + " — " + what, 13f, color = Color.rgb(60, 66, 75)))
-        }
         return sv
     }
 
@@ -971,6 +923,16 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     // ================================================================ Отчёты
 
+    /** «Отправить»: отчёт за сегодня (а если сегодня логов не было — по последнему логу). */
+    private fun sendMenu() {
+        val sid = siteId ?: return
+        if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
+        val dayStart = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        reportMenu(panelSel, { logs -> if (logs.any { it.ts >= dayStart }) dayStart else logs.last().ts }, true)
+    }
+
     private fun periodMenu() {
         val sid = siteId ?: return
         if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
@@ -1001,15 +963,18 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             }.show()
     }
 
-    private fun reportMenu(panelId: String?, fromFor: (List<LogRec>) -> Long) {
+    private fun reportMenu(panelId: String?, fromFor: (List<LogRec>) -> Long, withOther: Boolean = false) {
         val sid = siteId ?: return
         if (!I18n.he) AutoTr.request(store.faults(sid).flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val r = store.period(sid, panelId, fromFor) ?: run { toast(I18n.t("noLogsForReport")); return }
         // Иврит в настройках — только иврит; русский — выбор: иврит или иврит + перевод
         val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
             else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
-        AlertDialog.Builder(this).setTitle(r.site.name)
-            .setItems(opts.map { I18n.t(it.first) }.toTypedArray()) { _, w ->
+        val labels = opts.map { I18n.t(it.first) } + (if (withOther) listOf(I18n.t("otherPeriod")) else emptyList())
+        AlertDialog.Builder(this).setTitle(r.site.name + " · " + SimpleDateFormat("dd.MM", Locale.US).format(Date(r.from)) +
+                (if (fmtD(r.from) != fmtD(r.to)) "–" + fmtD(r.to) else ""))
+            .setItems(labels.toTypedArray()) { _, w ->
+                if (w >= opts.size) { periodMenu(); return@setItems }
                 val (key, heOnly) = opts[w]
                 when {
                     key.startsWith("wa") -> shareWhatsapp(PeriodExport.whatsapp(r, store, heOnly))
@@ -1084,7 +1049,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         lg.addView(ru); lg.addView(he)
         lg.check(if (I18n.he) he.id else ru.id)
         box.addView(lg)
-        box.addView(btn(I18n.t("editActions")) { actionsEditor() })
         AlertDialog.Builder(this).setTitle(I18n.t("settings")).setView(box)
             .setPositiveButton(I18n.t("ok")) { _, _ ->
                 val heSel = lg.checkedRadioButtonId == he.id
