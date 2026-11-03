@@ -930,7 +930,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val dayStart = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
         }.timeInMillis
-        val go = { reportMenu(panelSel, { logs -> if (logs.any { it.ts >= dayStart }) dayStart else logs.last().ts }, true) }
+        val go = { reportMenu(panelSel, true) { logs -> if (logs.any { it.ts >= dayStart }) dayStart else logs.last().ts } }
         // Главное в отчёте — причины по оставшимся неисправностям: напомнить, если не заполнено
         val noComment = store.faults(sid).count {
             it.active && (panelSel == null || it.panelId == panelSel) && it.comment.isBlank() && it.action.isEmpty()
@@ -972,7 +972,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             }.show()
     }
 
-    private fun reportMenu(panelId: String?, fromFor: (List<LogRec>) -> Long, withOther: Boolean = false) {
+    private fun reportMenu(panelId: String?, withOther: Boolean = false, fromFor: (List<LogRec>) -> Long) {
         val sid = siteId ?: return
         if (!I18n.he) AutoTr.request(store.faults(sid).flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val r = store.period(sid, panelId, fromFor) ?: run { toast(I18n.t("noLogsForReport")); return }
