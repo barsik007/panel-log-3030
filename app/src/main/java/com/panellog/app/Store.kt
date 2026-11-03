@@ -353,6 +353,43 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
         if (text.isNotBlank()) addHistory(faultId, now(), "comment", text)
     }
 
+    /** Заметки по ошибкам панели для передачи другому технику. */
+    fun notesJson(panelId: String): JSONArray {
+        val a = JSONArray()
+        for (f in query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }) {
+            if (f.comment.isBlank() && f.action.isEmpty() && !f.billable && !f.parked) continue
+            a.put(JSONObject().put("key", f.key).put("comment", f.comment).put("action", f.action)
+                .put("billable", f.billable).put("parked", f.parked))
+        }
+        return a
+    }
+
+    /** Добавить заметки другого техника к своим: ничего не стирается; разные комментарии склеиваются с именем. */
+    fun mergeNotes(panelId: String, notes: JSONArray, who: String): Int {
+        val mine = query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }.associateBy { it.key }
+        var changed = 0
+        for (i in 0 until notes.length()) {
+            val n = notes.optJSONObject(i) ?: continue
+            val f = mine[n.optString("key")] ?: continue
+            var ch = false
+            val t = n.optString("comment").trim()
+            val m = f.comment.trim()
+            if (t.isNotEmpty() && !m.contains(t)) {
+                val merged = when {
+                    m.isEmpty() || t.contains(m) -> t
+                    else -> m + "\n— " + who + ": " + t
+                }
+                setComment(f.id, merged); ch = true
+            }
+            val act = n.optString("action")
+            if (act.isNotEmpty() && f.action.isEmpty()) { setAction(f.id, act, null); ch = true }
+            if (n.optBoolean("billable") && !f.billable) { setBillable(f.id, true); ch = true }
+            if (n.optBoolean("parked") && !f.parked) { setParked(f.id, true); ch = true }
+            if (ch) changed++
+        }
+        return changed
+    }
+
     fun newPhotoFile(): File = File(photoDir(), uuid() + ".jpg")
 
     fun addPhoto(faultId: String, file: File) {

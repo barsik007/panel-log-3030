@@ -870,7 +870,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun logMenu(l: LogRec) {
         val items = arrayOf(I18n.t("logFile"), I18n.t("shareTech"), I18n.t("paperView"), I18n.t("reportFrom"), I18n.t("deleteLog"))
         AlertDialog.Builder(this).setTitle(fmt(l.ts)).setItems(items) { _, w0 ->
-            if (w0 == 1) { shareG1h(listOf(l)); return@setItems }
+            if (w0 == 1) { shareTechMenu(listOf(l)); return@setItems }
             val w = if (w0 > 1) w0 - 1 else w0
             when (w) {
                 0 -> shareLogFile(l)
@@ -944,8 +944,25 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     // ================================================================ Обмен логами между техниками (.g1h)
 
-    /** Чистый лог (без комментариев и отметок) → файл .g1h для другого техника. */
-    private fun shareG1h(list: List<LogRec>) {
+    private fun techName(): String = prefs().getString("techName", "") ?: ""
+
+    /** Файл для техника: только лог или лог + мои заметки (для заметок нужно имя). */
+    private fun shareTechMenu(list: List<LogRec>) {
+        AlertDialog.Builder(this).setTitle(I18n.t("shareTech"))
+            .setItems(arrayOf(I18n.t("shareLogOnly"), I18n.t("shareWithNotes"))) { _, w ->
+                if (w == 0) { shareG1h(list, false); return@setItems }
+                if (techName().isNotBlank()) { shareG1h(list, true); return@setItems }
+                val e = input(I18n.t("techName"))
+                AlertDialog.Builder(this).setTitle(I18n.t("techName")).setView(dialogBox().apply { addView(e) })
+                    .setPositiveButton(I18n.t("ok")) { _, _ ->
+                        prefs().edit().putString("techName", e.text.toString().trim()).apply()
+                        shareG1h(list, true)
+                    }.setNegativeButton(I18n.t("cancel"), null).show()
+            }.show()
+    }
+
+    /** Лог (+ при желании заметки по ошибкам этой панели) → файл .g1h для другого техника. */
+    private fun shareG1h(list: List<LogRec>, withNotes: Boolean) {
         try {
             val files = ArrayList<File>()
             for (l in list) {
@@ -958,6 +975,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 j.put("panel", p?.name ?: ""); j.put("detected", p?.detected ?: "")
                 j.put("ts", l.ts); j.put("events", l.events)
                 j.put("raw", android.util.Base64.encodeToString(raw, android.util.Base64.NO_WRAP))
+                if (withNotes) { j.put("who", techName().ifBlank { I18n.t("techDefault") }); j.put("notes", store.notesJson(l.panelId)) }
                 val safe = { x: String -> x.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(30) }
                 val dir = File(store.dataDir(), "share").also { it.mkdirs() }
                 val f = File(dir, "G1_" + safe(s.name) + "_" + safe(p?.name ?: "") + "_" +
@@ -976,7 +994,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     }
 
     private data class G1h(val site: String, val address: String, val panel: String, val detected: String,
-                           val ts: Long, val events: Int, val raw: ByteArray)
+                           val ts: Long, val events: Int, val raw: ByteArray,
+                           val who: String, val notes: org.json.JSONArray?)
 
     /** Файл .g1h открыт из WhatsApp/почты/проводника или прислан через «Поделиться». */
     private fun handleFileIntent(i: Intent) {
@@ -998,7 +1017,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 val j = org.json.JSONObject(text)
                 if (!j.has("g1h") || !j.has("raw")) continue
                 items.add(G1h(j.optString("site"), j.optString("address"), j.optString("panel"), j.optString("detected"),
-                    j.optLong("ts"), j.optInt("events"), android.util.Base64.decode(j.getString("raw"), android.util.Base64.DEFAULT)))
+                    j.optLong("ts"), j.optInt("events"), android.util.Base64.decode(j.getString("raw"), android.util.Base64.DEFAULT),
+                    j.optString("who").ifBlank { I18n.t("techDefault") }, j.optJSONArray("notes")))
             } catch (_: Exception) { }
         }
         if (items.isEmpty()) { toast(I18n.t("notG1")); return }
@@ -1010,7 +1030,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val g = items[k]
         val next: () -> Unit = { mainHandler.post { importNext(items, k + 1) } }
         AlertDialog.Builder(this)
-            .setMessage(I18n.f("importQ", g.site, g.panel, fmt(g.ts), g.events))
+            .setMessage(I18n.f("importQ", g.site, g.panel, fmt(g.ts), g.events) +
+                (if (g.notes != null && g.notes.length() > 0) "\n\n" + I18n.f("importNotes", g.who, g.notes.length()) else ""))
             .setPositiveButton(I18n.t("importAdd")) { _, _ -> chooseImportSite(g, next) }
             .setNegativeButton(I18n.t("cancel")) { _, _ -> next() }
             .setCancelable(false).show()
@@ -1037,10 +1058,23 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val pid = p?.id ?: store.addPanel(sid, g.panel.ifBlank { "רכזת " + (panels.size + 1) })
         val existing = store.panelLogs(pid)
         if (existing.any { l -> try { File(l.raw).readBytes().contentEquals(g.raw) } catch (_: Exception) { false } }) {
-            toast(I18n.t("dupLog")); siteId = sid; panelSel = pid; go(Scr.SITE); next(); return
+            siteId = sid; panelSel = pid; tab = 0; searchText = ""
+            if (g.notes == null) { toast(I18n.t("dupLog")); go(Scr.SITE); next(); return }
+            val n = store.mergeNotes(pid, g.notes, g.who)
+            go(Scr.SITE)
+            AlertDialog.Builder(this).setMessage(if (n > 0) I18n.f("notesMerged", n) else I18n.t("notesNone"))
+                .setPositiveButton(I18n.t("close")) { _, _ -> next() }.setCancelable(false).show()
+            return
         }
         val newest = existing.maxOfOrNull { it.ts } ?: 0L
-        val doIt = { saveCaptured(sid, pid, g.raw, g.ts); next() }
+        val doIt = {
+            saveCaptured(sid, pid, g.raw, g.ts)
+            if (g.notes != null) {
+                val n = store.mergeNotes(pid, g.notes, g.who)
+                render(); toast(if (n > 0) I18n.f("notesMerged", n) else I18n.t("notesNone"))
+            }
+            next()
+        }
         if (newest > g.ts) {
             AlertDialog.Builder(this).setMessage(I18n.f("olderLog", fmt(newest)))
                 .setPositiveButton(I18n.t("importAdd")) { _, _ -> doIt() }
@@ -1069,7 +1103,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
         AlertDialog.Builder(this).setTitle(I18n.t("sendAsIs"))
             .setItems((opts.map { I18n.t(it.first) } + I18n.t("shareTech")).toTypedArray()) { _, w ->
-                if (w >= opts.size) { shareG1h(lastLogs); return@setItems }
+                if (w >= opts.size) { shareTechMenu(lastLogs); return@setItems }
                 val (key, he) = opts[w]
                 if (key.startsWith("wa")) {
                     shareWhatsapp(parts.joinToString("\n\n— — —\n\n") { (p, ev) -> ReportExport.whatsappText(ev, title(p), he) })
@@ -1222,8 +1256,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         lg.addView(ru); lg.addView(he)
         lg.check(if (I18n.he) he.id else ru.id)
         box.addView(lg)
+        box.addView(label(I18n.t("techName")))
+        val nameE = input(I18n.t("techName"), techName()).apply { setSingleLine() }
+        box.addView(nameE)
         AlertDialog.Builder(this).setTitle(I18n.t("settings")).setView(box)
             .setPositiveButton(I18n.t("ok")) { _, _ ->
+                prefs().edit().putString("techName", nameE.text.toString().trim()).apply()
                 val heSel = lg.checkedRadioButtonId == he.id
                 prefs().edit().putInt("baud", BAUDS[baudSp.selectedItemPosition.coerceIn(0, BAUDS.size - 1)])
                     .putString("lang", if (heSel) "he" else "ru").apply()
