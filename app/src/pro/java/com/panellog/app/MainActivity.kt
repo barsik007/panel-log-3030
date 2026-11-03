@@ -930,7 +930,16 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val dayStart = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
         }.timeInMillis
-        reportMenu(panelSel, { logs -> if (logs.any { it.ts >= dayStart }) dayStart else logs.last().ts }, true)
+        val go = { reportMenu(panelSel, { logs -> if (logs.any { it.ts >= dayStart }) dayStart else logs.last().ts }, true) }
+        // Главное в отчёте — причины по оставшимся неисправностям: напомнить, если не заполнено
+        val noComment = store.faults(sid).count {
+            it.active && (panelSel == null || it.panelId == panelSel) && it.comment.isBlank() && it.action.isEmpty()
+        }
+        if (noComment == 0) { go(); return }
+        AlertDialog.Builder(this).setMessage(I18n.f("noCommentQ", noComment))
+            .setPositiveButton(I18n.t("sendAnyway")) { _, _ -> go() }
+            .setNegativeButton(I18n.t("fillComments")) { _, _ -> tab = 0; searchText = ""; render() }
+            .show()
     }
 
     private fun periodMenu() {

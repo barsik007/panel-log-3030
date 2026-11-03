@@ -177,12 +177,35 @@ object PeriodExport {
 
     private data class Sec(val he: String, val ru: String, val items: List<Fault>)
 
+    /** Главное — что осталось (с причинами); затем коротко — что устранено. */
+    private fun openOf(r: PanelSection): List<Fault> =
+        (r.billable.filter { it.active } + r.added + r.remaining)
+            .sortedWith(compareBy<Fault>({ !it.billable }, { it.isSystem }, { it.address }))
+    private fun fixedOf(r: PanelSection): List<Fault> =
+        (r.fixed + r.billable.filter { !it.active }).sortedWith(compareBy<Fault>({ it.isSystem }, { it.address }))
+
     private fun sections(r: PanelSection) = listOf(
-        Sec("טעון אישור לתשלום", "Требует согласования оплаты", r.billable),
-        Sec("תוקן", "Устранено", r.fixed),
-        Sec("חדש", "Новые", r.added),
-        Sec("נשאר פתוח", "Осталось", r.remaining)
+        Sec("תקלות שנשארו פתוחות", "Остались неисправности", openOf(r)),
+        Sec("תוקן", "Устранено", fixedOf(r))
     )
+
+    /** Пометки в строке: ₪ к оплате, 🆕 новая, 🔁 повторная. */
+    private fun tags(f: Fault, r: PanelSection, heOnly: Boolean): String {
+        val t = ArrayList<String>()
+        if (f.billable) t.add(if (heOnly) "₪ לתשלום" else "₪ לתשלום (к оплате)")
+        if (r.added.any { it.id == f.id }) t.add(if (heOnly) "🆕 חדש" else "🆕 חדש (новая)")
+        if (f.recur > 0) t.add("🔁 ×" + f.recur)
+        return t.joinToString("  ")
+    }
+
+    private fun countsLine(r: PeriodReport, heOnly: Boolean): String {
+        val open = r.panels.sumOf { openOf(it).size }
+        val bill = r.panels.sumOf { p -> openOf(p).count { it.billable } }
+        val newN = r.panels.sumOf { it.added.size }
+        val fixed = r.panels.sumOf { fixedOf(it).size }
+        return if (heOnly) "נשארו פתוחות: $open (לתשלום $bill, חדשות $newN) · תוקנו: $fixed"
+            else "Осталось: $open (к оплате $bill, новых $newN) · устранено: $fixed"
+    }
 
     private fun problem(f: Fault, heOnly: Boolean): String {
         if (heOnly) return f.problem
@@ -217,25 +240,26 @@ object PeriodExport {
         val sb = StringBuilder()
         sb.append("*").append(r.site.name).append("*\n")
         sb.append(if (heOnly) "דוח תקלות רכזת · " else "דוח תקלות רכזת · Отчёт · ").append(periodText(r)).append("\n")
-        val counts = if (heOnly)
-            "לתשלום ${r.billable.size} · תוקנו ${r.fixed.size} · חדשות ${r.added.size} · נשארו ${r.remaining.size}"
-        else "К оплате ${r.billable.size} · устранено ${r.fixed.size} · новых ${r.added.size} · осталось ${r.remaining.size}"
-        sb.append(counts).append("\n")
+        sb.append(countsLine(r, heOnly)).append("\n")
         for (ps in r.panels) {
         sb.append("\n━━ *").append(ps.panel.name).append("*")
         if (ps.panel.detected.isNotEmpty() && ps.panel.detected != ps.panel.name) sb.append(" (").append(ps.panel.detected).append(")")
         sb.append(" ━━\n")
-        for (s in sections(ps)) {
+        for ((si, s) in sections(ps).withIndex()) {
             if (s.items.isEmpty()) continue
+            val openSec = si == 0
             sb.append("\n*").append(s.he).append(if (heOnly) "" else " / " + s.ru).append(" (").append(s.items.size).append("):*\n")
             s.items.forEachIndexed { i, f ->
                 sb.append(i + 1).append(". ")
                 if (!f.isSystem) sb.append(f.address).append(" · ")
                 sb.append(type(f, heOnly)).append(" — ").append(problem(f, heOnly)).append('\n')
                 val p = place(f, heOnly)
-                if (p.isNotEmpty()) sb.append("    ").append(p).append('\n')
+                if (p.isNotEmpty()) sb.append("    📍 ").append(p).append('\n')
+                val tg = tags(f, ps, heOnly)
+                if (tg.isNotEmpty()) sb.append("    ").append(tg).append('\n')
                 val dn = done(f, store, heOnly)
-                if (dn.isNotEmpty()) sb.append("    ✔ ").append(dn).append('\n')
+                if (openSec) sb.append("    💬 ").append(dn.ifEmpty { if (heOnly) "— אין הערה" else "— нет комментария" }).append('\n')
+                else if (dn.isNotEmpty()) sb.append("    ✔ ").append(dn).append('\n')
             }
         }
         }
@@ -257,8 +281,8 @@ object PeriodExport {
         val content = pageW - 2 * margin // 535
 
         val base = intArrayOf(18, 54, 78, 100, 135, 150) // = 535
-        val headersHe = arrayOf("#", "כתובת", "סוג", "תקלה", "מיקום", "בוצע / הערה")
-        val headersRu = arrayOf("#", "כתובת\nАдрес", "סוג\nТип", "תקלה\nНеисправность", "מיקום\nМесто", "בוצע / הערה\nСделано / комментарий")
+        val headersHe = arrayOf("#", "כתובת", "סוג", "תקלה", "מיקום", "סיבה / הערה")
+        val headersRu = arrayOf("#", "כתובת\nАдрес", "סוג\nТип", "תקלה\nНеисправность", "מיקום\nМесто", "סיבה / הערה\nПричина / комментарий")
         val widths = if (heOnly) base.reversedArray() else base
         val headers = (if (heOnly) headersHe else headersRu).let { if (heOnly) it.reversedArray() else it }
         val order = if (heOnly) listOf(5, 4, 3, 2, 1, 0) else listOf(0, 1, 2, 3, 4, 5)
@@ -309,11 +333,11 @@ object PeriodExport {
             if (heOnly) {
                 append("תקופה: ").append(periodText(r)).append("   קריאות: ").append(r.logsCount)
                 append("   רכזות: ").append(r.panels.size).append('\n')
-                append("לתשלום ${r.billable.size} · תוקנו ${r.fixed.size} · חדשות ${r.added.size} · נשארו ${r.remaining.size}")
+                append(countsLine(r, true))
             } else {
                 append("Период: ").append(periodText(r)).append("   Логов: ").append(r.logsCount)
                 append("   Панелей (רכזות): ").append(r.panels.size).append('\n')
-                append("К оплате ${r.billable.size} · устранено ${r.fixed.size} · новых ${r.added.size} · осталось ${r.remaining.size}")
+                append(countsLine(r, false))
             }
         }
         val meta = layout(metaText, metaPaint, content, Layout.Alignment.ALIGN_NORMAL)
@@ -340,9 +364,9 @@ object PeriodExport {
                     (i + 1).toString(),
                     if (f.isSystem) "—" else f.address + (if (f.zone.isNotEmpty()) "\n" + f.zone else ""),
                     type(f, heOnly),
-                    problem(f, heOnly) + (if (f.recur > 0) "\n🔁 ×" + f.recur else ""),
+                    problem(f, heOnly) + tags(f, ps, heOnly).let { if (it.isEmpty()) "" else "\n$it" },
                     place(f, heOnly).ifEmpty { "—" },
-                    done(f, store, heOnly).ifEmpty { "" }
+                    done(f, store, heOnly).ifEmpty { "—" }
                 )
                 val paints = listOf(cellPaint, monoPaint, cellPaint, cellPaint, cellPaint, cellPaint)
                 val cells = order.mapIndexed { col, k -> layout(texts[k], paints[k], widths[col]) }
