@@ -483,6 +483,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (badges.isNotEmpty()) c.addView(tv(badges, 13f, color = Color.rgb(30, 63, 138)).apply { setPadding(0, dp(4), 0, 0) })
         warning(f)?.let { c.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
         c.setOnClickListener { faultId = f.id; go(Scr.FAULT) }
+        if (f.parked) c.alpha = 0.4f  // «не актуально» — бледная
         return c
     }
 
@@ -504,6 +505,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (!f.active) b.add(I18n.f("stFixed", fmtD(f.resolvedTs)))
         else if (logCount > 1 && f.firstSeen == lastTs) b.add(I18n.t("stNew"))
         if (f.recur > 0) b.add(I18n.f("stRecur", f.recur))
+        if (f.parked) b.add(I18n.t("stParked"))
         if (f.billable) b.add(I18n.t("stBill"))
         if (f.action.isNotEmpty()) b.add("✔ " + store.actionText(f.action))
         return b.joinToString("  ")
@@ -540,6 +542,13 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         info.addView(tv(if (f.active) I18n.t("stActive") + (if (badges.isNotEmpty()) "  $badges" else "") else badges, 13f, color = Color.rgb(30, 63, 138)))
         warning(f)?.let { info.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
         box.addView(info)
+
+        // Не актуально (на утверждении / согласовании)
+        box.addView(CheckBox(this).apply {
+            text = "⏸ " + I18n.t("parked"); textSize = 16f; isChecked = f.parked
+            setPadding(0, dp(6), 0, dp(6))
+            setOnCheckedChangeListener { _, ch -> store.setParked(f.id, ch) }
+        })
 
         // К оплате
         box.addView(CheckBox(this).apply {

@@ -28,7 +28,9 @@ data class Fault(
     val label: String, val label2: String, val node: String,
     val firstSeen: Long, val lastSeen: Long, val active: Boolean, val resolvedTs: Long,
     val recur: Int, val billable: Boolean, val action: String, val comment: String,
-    val panelId: String
+    val panelId: String,
+    /** «Не актуально»: на утверждении / в согласовании — не трогать. */
+    val parked: Boolean = false
 ) {
     val isSystem: Boolean get() = address.isEmpty()
     val loop: String get() = Regex("L(\\d{2})").find(address)?.groupValues?.get(1) ?: ""
@@ -62,13 +64,13 @@ data class PeriodReport(val site: Site, val from: Long, val to: Long, val panels
 }
 
 /** Локальная база: объекты, логи, неисправности, история, фото. ID — UUID (готово к синхронизации). */
-class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 2) {
+class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE sites(id TEXT PRIMARY KEY, name TEXT, address TEXT, note TEXT, panel TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE panels(id TEXT PRIMARY KEY, site_id TEXT, name TEXT, detected TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE logs(id TEXT PRIMARY KEY, site_id TEXT, ts INTEGER, raw TEXT, events INTEGER, panel_id TEXT)")
-        db.execSQL("CREATE TABLE faults(id TEXT PRIMARY KEY, site_id TEXT, fkey TEXT, address TEXT, zone TEXT, dev_type TEXT, problem TEXT, label TEXT, label2 TEXT, node TEXT, first_seen INTEGER, last_seen INTEGER, active INTEGER, resolved_ts INTEGER, recur INTEGER, billable INTEGER, action TEXT, comment TEXT, updated INTEGER, panel_id TEXT)")
+        db.execSQL("CREATE TABLE faults(id TEXT PRIMARY KEY, site_id TEXT, fkey TEXT, address TEXT, zone TEXT, dev_type TEXT, problem TEXT, label TEXT, label2 TEXT, node TEXT, first_seen INTEGER, last_seen INTEGER, active INTEGER, resolved_ts INTEGER, recur INTEGER, billable INTEGER, action TEXT, comment TEXT, updated INTEGER, panel_id TEXT, parked INTEGER DEFAULT 0)")
         db.execSQL("CREATE TABLE log_faults(log_id TEXT, fault_id TEXT)")
         db.execSQL("CREATE TABLE history(id TEXT PRIMARY KEY, fault_id TEXT, ts INTEGER, kind TEXT, text TEXT)")
         db.execSQL("CREATE TABLE photos(id TEXT PRIMARY KEY, fault_id TEXT, path TEXT, ts INTEGER)")
@@ -96,6 +98,8 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 2) 
                 db.execSQL("UPDATE faults SET panel_id=? WHERE site_id=?", arrayOf<Any>(pid, sid))
             }
         }
+        // v2 → v3: отметка «не актуально»
+        if (oldVersion < 3) db.execSQL("ALTER TABLE faults ADD COLUMN parked INTEGER DEFAULT 0")
     }
 
     private fun uuid() = UUID.randomUUID().toString()
@@ -304,10 +308,11 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 2) 
         c.getString(0), c.getString(1), c.getString(2), c.getString(3) ?: "", c.getString(4) ?: "", c.getString(5) ?: "",
         c.getString(6) ?: "", c.getString(7) ?: "", c.getString(8) ?: "", c.getString(9) ?: "",
         c.getLong(10), c.getLong(11), c.getInt(12) == 1, c.getLong(13), c.getInt(14), c.getInt(15) == 1,
-        c.getString(16) ?: "", c.getString(17) ?: "", c.getString(18) ?: ""
+        c.getString(16) ?: "", c.getString(17) ?: "", c.getString(18) ?: "",
+        c.getInt(19) == 1
     )
 
-    private val FCOLS = "id,site_id,fkey,address,zone,dev_type,problem,label,label2,node,first_seen,last_seen,active,resolved_ts,recur,billable,action,comment,panel_id"
+    private val FCOLS = "id,site_id,fkey,address,zone,dev_type,problem,label,label2,node,first_seen,last_seen,active,resolved_ts,recur,billable,action,comment,panel_id,parked"
 
     fun faults(siteId: String): List<Fault> =
         query("SELECT $FCOLS FROM faults WHERE site_id=?", arrayOf(siteId)) { faultFrom(it) }
@@ -336,6 +341,11 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 2) 
 
     fun setBillable(faultId: String, b: Boolean) {
         writableDatabase.update("faults", ContentValues().apply { put("billable", if (b) 1 else 0); put("updated", now()) }, "id=?", arrayOf(faultId))
+    }
+
+    fun setParked(faultId: String, b: Boolean) {
+        writableDatabase.update("faults", ContentValues().apply { put("parked", if (b) 1 else 0); put("updated", now()) }, "id=?", arrayOf(faultId))
+        addHistory(faultId, now(), if (b) "parked" else "unparked", "")
     }
 
     fun setComment(faultId: String, text: String) {
