@@ -466,7 +466,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             q.isEmpty() || listOf(it.address, it.zone, it.label, it.label2, it.problem, it.node, it.devType,
                 PanelDecoder.ru(it.problem) ?: "", store.actionText(it.action), it.comment)
                 .any { s -> s.lowercase().contains(q) }
-        }.let { fs -> if (tab == 1) fs.sortedByDescending { it.resolvedTs } else fs.sortedBy { it.active && it.repaired } }
+        }.let { fs -> if (tab == 1) fs.sortedByDescending { it.resolvedTs } else fs.sortedBy {
+            // сверху — что ещё нужно устранить; ниже «не актуально»; в самом конце «починил»
+            when { it.active && it.repaired -> 2; it.parked -> 1; else -> 0 }
+        } }
         if (faults.isEmpty()) {
             list.addView(tv(I18n.t("noFaults"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
             return
