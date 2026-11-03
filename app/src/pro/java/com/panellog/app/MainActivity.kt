@@ -135,11 +135,13 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         render()
         if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) mainHandler.post { autoCapture() }
+        else intent?.let { i -> mainHandler.post { handleFileIntent(i) } }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) autoCapture()
+        else handleFileIntent(intent)
     }
 
     /** Переходник вставлен: сразу к снятию лога (на открытом или последнем объекте). */
@@ -720,9 +722,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         } else saveCaptured(sid, pid, bytes)
     }
 
-    private fun saveCaptured(sid: String, pid: String, bytes: ByteArray) {
+    private fun saveCaptured(sid: String, pid: String, bytes: ByteArray, ts: Long = 0L) {
         val before = store.panel(pid)
-        val r = store.processLog(sid, pid, bytes)
+        val r = store.processLog(sid, pid, bytes, ts)
+        siteId = sid; prefs().edit().putString("lastSiteId", sid).apply()
         captureBytes.reset()
         val msg = StringBuilder(I18n.t("saved")).append(" · ").append(before?.name ?: "").append("\n\n")
         if (r.first) msg.append(I18n.f("firstLogBody", r.total))
@@ -865,8 +868,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     }
 
     private fun logMenu(l: LogRec) {
-        val items = arrayOf(I18n.t("logFile"), I18n.t("paperView"), I18n.t("reportFrom"), I18n.t("deleteLog"))
-        AlertDialog.Builder(this).setTitle(fmt(l.ts)).setItems(items) { _, w ->
+        val items = arrayOf(I18n.t("logFile"), I18n.t("shareTech"), I18n.t("paperView"), I18n.t("reportFrom"), I18n.t("deleteLog"))
+        AlertDialog.Builder(this).setTitle(fmt(l.ts)).setItems(items) { _, w0 ->
+            if (w0 == 1) { shareG1h(listOf(l)); return@setItems }
+            val w = if (w0 > 1) w0 - 1 else w0
             when (w) {
                 0 -> shareLogFile(l)
                 1 -> {
@@ -937,15 +942,124 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     // ================================================================ Отчёты
 
+    // ================================================================ Обмен логами между техниками (.g1h)
+
+    /** Чистый лог (без комментариев и отметок) → файл .g1h для другого техника. */
+    private fun shareG1h(list: List<LogRec>) {
+        try {
+            val files = ArrayList<File>()
+            for (l in list) {
+                val s = store.site(l.siteId) ?: continue
+                val p = store.panel(l.panelId)
+                val raw = File(l.raw).readBytes()
+                val j = org.json.JSONObject()
+                j.put("g1h", 1); j.put("app", appVersion())
+                j.put("site", s.name); j.put("address", s.address)
+                j.put("panel", p?.name ?: ""); j.put("detected", p?.detected ?: "")
+                j.put("ts", l.ts); j.put("events", l.events)
+                j.put("raw", android.util.Base64.encodeToString(raw, android.util.Base64.NO_WRAP))
+                val safe = { x: String -> x.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(30) }
+                val dir = File(store.dataDir(), "share").also { it.mkdirs() }
+                val f = File(dir, "G1_" + safe(s.name) + "_" + safe(p?.name ?: "") + "_" +
+                    SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(l.ts)) + ".g1h")
+                f.writeText(j.toString())
+                files.add(f)
+            }
+            if (files.isEmpty()) { toast(I18n.t("noLogsForReport")); return }
+            val uris = ArrayList(files.map { FileProvider.getUriForFile(this, "$packageName.files", it) })
+            val send = if (uris.size == 1) Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+                else Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            send.type = "application/octet-stream"
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(send, I18n.t("sendWith")))
+        } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
+    }
+
+    private data class G1h(val site: String, val address: String, val panel: String, val detected: String,
+                           val ts: Long, val events: Int, val raw: ByteArray)
+
+    /** Файл .g1h открыт из WhatsApp/почты/проводника или прислан через «Поделиться». */
+    private fun handleFileIntent(i: Intent) {
+        val uris = ArrayList<Uri>()
+        when (i.action) {
+            Intent.ACTION_VIEW -> i.data?.let { uris.add(it) }
+            Intent.ACTION_SEND -> (if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else @Suppress("DEPRECATION") i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let { uris.add(it) }
+            Intent.ACTION_SEND_MULTIPLE -> (if (Build.VERSION.SDK_INT >= 33) i.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else @Suppress("DEPRECATION") i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM))?.let { uris.addAll(it) }
+            else -> return
+        }
+        if (uris.isEmpty()) return
+        setIntent(Intent(this, MainActivity::class.java)) // не импортировать повторно при пересоздании
+        val items = ArrayList<G1h>()
+        for (u in uris) {
+            try {
+                val text = contentResolver.openInputStream(u)?.use { it.readBytes() }?.toString(Charsets.UTF_8) ?: continue
+                val j = org.json.JSONObject(text)
+                if (!j.has("g1h") || !j.has("raw")) continue
+                items.add(G1h(j.optString("site"), j.optString("address"), j.optString("panel"), j.optString("detected"),
+                    j.optLong("ts"), j.optInt("events"), android.util.Base64.decode(j.getString("raw"), android.util.Base64.DEFAULT)))
+            } catch (_: Exception) { }
+        }
+        if (items.isEmpty()) { toast(I18n.t("notG1")); return }
+        importNext(items.sortedBy { it.ts }, 0)
+    }
+
+    private fun importNext(items: List<G1h>, k: Int) {
+        if (k >= items.size) return
+        val g = items[k]
+        val next = { mainHandler.post { importNext(items, k + 1) } }
+        AlertDialog.Builder(this)
+            .setMessage(I18n.f("importQ", g.site, g.panel, fmt(g.ts), g.events))
+            .setPositiveButton(I18n.t("importAdd")) { _, _ -> chooseImportSite(g, next) }
+            .setNegativeButton(I18n.t("cancel")) { _, _ -> next() }
+            .setCancelable(false).show()
+    }
+
+    private fun chooseImportSite(g: G1h, next: () -> Unit) {
+        val sites = store.sites()
+        val same = sites.firstOrNull { it.name.trim().equals(g.site.trim(), ignoreCase = true) }
+        if (same != null) { importInto(same.id, g, next); return }
+        val labels = listOf(I18n.f("newSiteNamed", g.site)) + sites.map { it.name }
+        AlertDialog.Builder(this).setTitle(I18n.t("importSite"))
+            .setItems(labels.toTypedArray()) { _, w ->
+                val sid = if (w == 0) store.addSite(g.site.ifBlank { "G1" }, g.address, "") else sites[w - 1].id
+                importInto(sid, g, next)
+            }
+            .setOnCancelListener { next() }.show()
+    }
+
+    private fun importInto(sid: String, g: G1h, next: () -> Unit) {
+        val panels = store.panels(sid)
+        val p = panels.firstOrNull { g.detected.isNotEmpty() && it.detected == g.detected }
+            ?: panels.firstOrNull { it.name.trim() == g.panel.trim() }
+            ?: (if (panels.size == 1 && panels[0].lastLogTs == 0L) panels[0] else null)
+        val pid = p?.id ?: store.addPanel(sid, g.panel.ifBlank { "רכזת " + (panels.size + 1) })
+        val existing = store.panelLogs(pid)
+        if (existing.any { l -> try { File(l.raw).readBytes().contentEquals(g.raw) } catch (_: Exception) { false } }) {
+            toast(I18n.t("dupLog")); siteId = sid; panelSel = pid; go(Scr.SITE); next(); return
+        }
+        val newest = existing.maxOfOrNull { it.ts } ?: 0L
+        val doIt = { saveCaptured(sid, pid, g.raw, g.ts); next() }
+        if (newest > g.ts) {
+            AlertDialog.Builder(this).setMessage(I18n.f("olderLog", fmt(newest)))
+                .setPositiveButton(I18n.t("importAdd")) { _, _ -> doIt() }
+                .setNegativeButton(I18n.t("cancel")) { _, _ -> next() }
+                .setCancelable(false).show()
+        } else doIt()
+    }
+
     /** «Отправить как есть»: последний лог каждой выбранной панели — ровно то, что показала панель, без комментариев. */
     private fun asIsMenu() {
         val sid = siteId ?: return
         val s = store.site(sid) ?: return
         val panels = store.panels(sid).filter { panelSel == null || it.id == panelSel }
         val logs = store.logs(sid)
+        val lastLogs = ArrayList<LogRec>()
         val parts = panels.mapNotNull { p ->
             val l = logs.filter { it.panelId == p.id }.maxByOrNull { it.ts } ?: return@mapNotNull null
             val raw = try { File(l.raw).readBytes() } catch (_: Exception) { return@mapNotNull null }
+            lastLogs.add(l)
             val d = PanelDecoder.decode(raw)
             if (!d.graphic) null else p to PanelDecoder.parse(d.visualLines)
         }
@@ -954,7 +1068,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
             else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
         AlertDialog.Builder(this).setTitle(I18n.t("sendAsIs"))
-            .setItems(opts.map { I18n.t(it.first) }.toTypedArray()) { _, w ->
+            .setItems((opts.map { I18n.t(it.first) } + I18n.t("shareTech")).toTypedArray()) { _, w ->
+                if (w >= opts.size) { shareG1h(lastLogs); return@setItems }
                 val (key, he) = opts[w]
                 if (key.startsWith("wa")) {
                     shareWhatsapp(parts.joinToString("\n\n— — —\n\n") { (p, ev) -> ReportExport.whatsappText(ev, title(p), he) })

@@ -234,8 +234,8 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 3) 
      * Сохраняет лог объекта и сравнивает его с текущим состоянием:
      * пропавшие → устранены, новые → добавлены, вернувшиеся → повторные.
      */
-    fun processLog(siteId: String, panelId: String, raw: ByteArray): CompareResult {
-        val ts = now()
+    fun processLog(siteId: String, panelId: String, raw: ByteArray, tsIn: Long = 0L): CompareResult {
+        val ts = if (tsIn > 0) tsIn else now()
         val logId = uuid()
         val rawFile = File(rawDir(), "$logId.bin")
         rawFile.writeBytes(raw)
