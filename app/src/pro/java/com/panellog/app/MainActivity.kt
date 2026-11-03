@@ -1137,14 +1137,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             }.show()
     }
 
-    /** «Отправить»: отчёт за сегодня (а если сегодня логов не было — по последнему логу). */
+    /** «Отчёт»: от самого раннего лога до самого последнего. */
     private fun sendMenu() {
         val sid = siteId ?: return
         if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
-        val dayStart = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
-        val go = { reportMenu(panelSel, true) { logs -> if (logs.any { it.ts >= dayStart }) dayStart else logs.last().ts } }
+        // по умолчанию: самый ранний лог → самый последний (вся работа на объекте)
+        val go = { reportMenu(panelSel, true) { _ -> 0L } }
         // Главное в отчёте — причины по оставшимся неисправностям: напомнить, если не заполнено
         val noComment = store.faults(sid).count {
             it.active && !it.repaired && (panelSel == null || it.panelId == panelSel) && it.comment.isBlank() && it.action.isEmpty()
