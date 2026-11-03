@@ -1008,7 +1008,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun importNext(items: List<G1h>, k: Int) {
         if (k >= items.size) return
         val g = items[k]
-        val next = { mainHandler.post { importNext(items, k + 1) } }
+        val next: () -> Unit = { mainHandler.post { importNext(items, k + 1) } }
         AlertDialog.Builder(this)
             .setMessage(I18n.f("importQ", g.site, g.panel, fmt(g.ts), g.events))
             .setPositiveButton(I18n.t("importAdd")) { _, _ -> chooseImportSite(g, next) }
