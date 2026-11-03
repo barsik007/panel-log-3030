@@ -288,7 +288,7 @@ object PanelDecoder {
 
     fun ru(s: String): String? {
         RU[s]?.let { return it }
-        Regex("תקלת הארקה בעניבה (\\d+)").find(s)?.let { return "замыкание на землю, шлейф " + it.groupValues[1] }
+        Regex("תקלת הארקה בעניבה (\\d+)").find(s)?.let { return "замыкание на землю, loop " + it.groupValues[1] }
         Regex("תקלה בלוח תצוגה (\\d+)").find(s)?.let { return "неисправность дисплея/повторителя " + it.groupValues[1] }
         return null
     }
