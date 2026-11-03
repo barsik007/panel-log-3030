@@ -414,7 +414,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             .filter { it.value.size >= 5 }
             .forEach { (k, v) ->
                 val prefix = if (panels.size > 1) (pName[k.first] ?: "") + " · " else ""
-                box.addView(tv("💡 " + prefix + I18n.f("loopHint", k.second.trimStart('0'), v.size, I18n.panel(k.third)), 13f,
+                box.addView(tv("💡 " + prefix + I18n.f("loopHint", "L" + k.second, v.size, I18n.panel(k.third)), 13f,
                     color = Color.rgb(122, 74, 0)).apply {
                     background = rounded(Color.rgb(255, 241, 214), 8); setPadding(dp(8), dp(6), dp(8), dp(6))
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
