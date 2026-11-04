@@ -545,16 +545,18 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val addr = input(I18n.t("entryAddr"), edit?.address ?: "").apply { setSingleLine() }
         val bill = CheckBox(this).apply { text = "₪ " + I18n.t("billable"); isChecked = edit?.billable ?: false }
         val box = dialogBox().apply { addView(what); addView(place); addView(addr); if (edit == null) addView(bill) }
+        fun save(photo: Boolean) {
+            val w = what.text.toString().trim()
+            if (w.isEmpty()) { toast(I18n.t("entryEmpty")); return }
+            val pl = place.text.toString().trim(); val ad = addr.text.toString().trim().uppercase()
+            val id = if (edit == null) store.addManual(sid, panelId, ad, w, pl, bill.isChecked)
+                else { store.updateManual(edit.id, ad, w, pl); edit.id }
+            faultId = id; tab = 0; go(Scr.FAULT)   // карточка: фото, комментарий
+            if (photo) takePhoto(id)
+        }
         AlertDialog.Builder(this).setTitle(I18n.t("entryTitle")).setView(box)
-            .setPositiveButton(I18n.t("ok")) { _, _ ->
-                val w = what.text.toString().trim()
-                if (w.isEmpty()) { toast(I18n.t("entryEmpty")); return@setPositiveButton }
-                val pl = place.text.toString().trim(); val ad = addr.text.toString().trim().uppercase()
-                if (edit == null) {
-                    faultId = store.addManual(sid, panelId, ad, w, pl, bill.isChecked)
-                    tab = 0; go(Scr.FAULT)   // сразу в карточку — добавить фото
-                } else { store.updateManual(edit.id, ad, w, pl); render() }
-            }
+            .setPositiveButton(I18n.t("ok")) { _, _ -> save(false) }
+            .setNeutralButton(I18n.t("entryPhoto")) { _, _ -> save(true) }
             .setNegativeButton(I18n.t("cancel"), null).show()
     }
 
