@@ -737,17 +737,22 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         } else saveCaptured(sid, pid, bytes)
     }
 
-    private fun saveCaptured(sid: String, pid: String, bytes: ByteArray, ts: Long = 0L) {
-        val before = store.panel(pid)
-        val r = store.processLog(sid, pid, bytes, ts)
-        siteId = sid; prefs().edit().putString("lastSiteId", sid).apply()
-        captureBytes.reset()
-        val msg = StringBuilder(I18n.t("saved")).append(" · ").append(before?.name ?: "").append("\n\n")
+    private fun captureMsg(before: Panel?, r: CompareResult): String {
+        val msg = StringBuilder()
         if (r.first) msg.append(I18n.f("firstLogBody", r.total))
         else msg.append(I18n.f("compareBody", r.fixed, r.added, r.recurred, r.remaining))
         if (r.notConfirmed > 0) msg.append("\n\n").append(I18n.f("notConfirmed", r.notConfirmed))
         if (before != null && before.detected.isNotEmpty() && r.panelName.isNotEmpty() && before.detected != r.panelName)
             msg.append("\n\n").append(I18n.f("otherPanel", r.panelName, before.detected))
+        return msg.toString()
+    }
+
+    private fun saveCaptured(sid: String, pid: String, bytes: ByteArray, ts: Long = 0L) {
+        val before = store.panel(pid)
+        val r = store.processLog(sid, pid, bytes, ts)
+        siteId = sid; prefs().edit().putString("lastSiteId", sid).apply()
+        captureBytes.reset()
+        val msg = StringBuilder(I18n.t("saved")).append(" · ").append(before?.name ?: "").append("\n\n").append(captureMsg(before, r))
         tab = 0; searchText = ""; panelSel = pid
         go(Scr.SITE)
         AlertDialog.Builder(this).setTitle(if (r.first) I18n.t("capture") else I18n.t("compareTitle"))
@@ -980,22 +985,31 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     /** Лог (+ при желании заметки по ошибкам этой панели) → файл .g1h для другого техника. */
     private fun shareG1h(list: List<LogRec>, withNotes: Boolean) {
         try {
+            // один файл на объект: все панели внутри (רכזת 1, רכזת 2…)
             val files = ArrayList<File>()
-            for (l in list) {
-                val s = store.site(l.siteId) ?: continue
-                val p = store.panel(l.panelId)
-                val raw = File(l.raw).readBytes()
+            for ((sid, logs) in list.groupBy { it.siteId }) {
+                val s = store.site(sid) ?: continue
                 val j = org.json.JSONObject()
-                j.put("g1h", 1); j.put("app", appVersion())
+                j.put("g1h", 2); j.put("app", appVersion())
                 j.put("site", s.name); j.put("address", s.address)
-                j.put("panel", p?.name ?: ""); j.put("detected", p?.detected ?: "")
-                j.put("ts", l.ts); j.put("events", l.events)
-                j.put("raw", android.util.Base64.encodeToString(raw, android.util.Base64.NO_WRAP))
-                if (withNotes) { j.put("who", techName().ifBlank { I18n.t("techDefault") }); j.put("notes", store.notesJson(l.panelId)) }
+                if (withNotes) j.put("who", techName().ifBlank { I18n.t("techDefault") })
+                val arr = org.json.JSONArray()
+                for (l in logs.sortedBy { store.panel(it.panelId)?.name ?: "" }) {
+                    val p = store.panel(l.panelId)
+                    val raw = File(l.raw).readBytes()
+                    val o = org.json.JSONObject()
+                    o.put("panel", p?.name ?: ""); o.put("detected", p?.detected ?: "")
+                    o.put("ts", l.ts); o.put("events", l.events)
+                    o.put("raw", android.util.Base64.encodeToString(raw, android.util.Base64.NO_WRAP))
+                    if (withNotes) o.put("notes", store.notesJson(l.panelId))
+                    arr.put(o)
+                }
+                j.put("logs", arr)
                 val safe = { x: String -> x.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(30) }
                 val dir = File(store.dataDir(), "share").also { it.mkdirs() }
-                val f = File(dir, "G1_" + safe(s.name) + "_" + safe(p?.name ?: "") + "_" +
-                    SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(l.ts)) + ".g1h")
+                val one = if (logs.size == 1) "_" + safe(store.panel(logs[0].panelId)?.name ?: "") else ""
+                val f = File(dir, "G1_" + safe(s.name) + one + "_" +
+                    SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(logs.maxOf { it.ts })) + ".g1h")
                 f.writeText(j.toString())
                 files.add(f)
             }
@@ -1026,75 +1040,98 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         }
         if (uris.isEmpty()) return
         setIntent(Intent(this, MainActivity::class.java)) // не импортировать повторно при пересоздании
-        val items = ArrayList<G1h>()
+        val packs = ArrayList<List<G1h>>()
         for (u in uris) {
             try {
                 val text = contentResolver.openInputStream(u)?.use { it.readBytes() }?.toString(Charsets.UTF_8) ?: continue
                 val j = org.json.JSONObject(text)
-                if (!j.has("g1h") || !j.has("raw")) continue
-                items.add(G1h(j.optString("site"), j.optString("address"), j.optString("panel"), j.optString("detected"),
-                    j.optLong("ts"), j.optInt("events"), android.util.Base64.decode(j.getString("raw"), android.util.Base64.DEFAULT),
-                    j.optString("who").ifBlank { I18n.t("techDefault") }, j.optJSONArray("notes")))
+                if (!j.has("g1h")) continue
+                val site = j.optString("site"); val addr = j.optString("address")
+                val who = j.optString("who").ifBlank { I18n.t("techDefault") }
+                fun item(o: org.json.JSONObject) = G1h(site, addr, o.optString("panel"), o.optString("detected"),
+                    o.optLong("ts"), o.optInt("events"), android.util.Base64.decode(o.getString("raw"), android.util.Base64.DEFAULT),
+                    who, o.optJSONArray("notes"))
+                val arr = j.optJSONArray("logs")
+                val pack = if (arr != null) (0 until arr.length()).mapNotNull { k -> arr.optJSONObject(k)?.let { item(it) } }
+                    else if (j.has("raw")) listOf(item(j)) else emptyList()   // формат v1: один лог
+                if (pack.isNotEmpty()) packs.add(pack)
             } catch (_: Exception) { }
         }
-        if (items.isEmpty()) { toast(I18n.t("notG1")); return }
-        importNext(items.sortedBy { it.ts }, 0)
+        if (packs.isEmpty()) { toast(I18n.t("notG1")); return }
+        importPack(packs, 0)
     }
 
-    private fun importNext(items: List<G1h>, k: Int) {
-        if (k >= items.size) return
-        val g = items[k]
-        val next: () -> Unit = { mainHandler.post { importNext(items, k + 1) } }
+    /** Один файл = один объект: одно подтверждение на все панели внутри. */
+    private fun importPack(packs: List<List<G1h>>, k: Int) {
+        if (k >= packs.size) return
+        val pack = packs[k]
+        val next: () -> Unit = { mainHandler.post { importPack(packs, k + 1) } }
+        val g0 = pack[0]
+        val lines = pack.joinToString("\n") { I18n.f("importPanelLine", it.panel, fmt(it.ts), it.events) }
+        val notesN = pack.sumOf { it.notes?.length() ?: 0 }
         AlertDialog.Builder(this)
-            .setMessage(I18n.f("importQ", g.site, g.panel, fmt(g.ts), g.events) +
-                (if (g.notes != null && g.notes.length() > 0) "\n\n" + I18n.f("importNotes", g.who, g.notes.length()) else ""))
-            .setPositiveButton(I18n.t("importAdd")) { _, _ -> chooseImportSite(g, next) }
+            .setMessage(I18n.f("importQ2", g0.site, lines) +
+                (if (notesN > 0) "\n\n" + I18n.f("importNotes", g0.who, notesN) else ""))
+            .setPositiveButton(I18n.t("importAdd")) { _, _ -> chooseImportSite(pack, next) }
             .setNegativeButton(I18n.t("cancel")) { _, _ -> next() }
             .setCancelable(false).show()
     }
 
-    private fun chooseImportSite(g: G1h, next: () -> Unit) {
+    private fun chooseImportSite(pack: List<G1h>, next: () -> Unit) {
+        val g = pack[0]
         val sites = store.sites()
         val same = sites.firstOrNull { it.name.trim().equals(g.site.trim(), ignoreCase = true) }
-        if (same != null) { importInto(same.id, g, next); return }
+        val go = { sid: String -> importItems(sid, pack, 0, StringBuilder(), ArrayList(), next) }
+        if (same != null) { go(same.id); return }
         val labels = listOf(I18n.f("newSiteNamed", g.site)) + sites.map { it.name }
         AlertDialog.Builder(this).setTitle(I18n.t("importSite"))
             .setItems(labels.toTypedArray()) { _, w ->
-                val sid = if (w == 0) store.addSite(g.site.ifBlank { "G1" }, g.address, "") else sites[w - 1].id
-                importInto(sid, g, next)
+                go(if (w == 0) store.addSite(g.site.ifBlank { "G1" }, g.address, "") else sites[w - 1].id)
             }
             .setOnCancelListener { next() }.show()
     }
 
-    private fun importInto(sid: String, g: G1h, next: () -> Unit) {
+    /** Панели файла по очереди; в конце — одно общее окно с итогом. */
+    private fun importItems(sid: String, pack: List<G1h>, k: Int, sum: StringBuilder, pids: ArrayList<String>, next: () -> Unit) {
+        if (k >= pack.size) {
+            siteId = sid; prefs().edit().putString("lastSiteId", sid).apply()
+            panelSel = if (pids.distinct().size == 1) pids[0] else null
+            tab = 0; searchText = ""
+            go(Scr.SITE)
+            AlertDialog.Builder(this).setTitle(I18n.t("importDone") + " · " + (store.site(sid)?.name ?: ""))
+                .setMessage(sum.toString().trim())
+                .setPositiveButton(I18n.t("close")) { _, _ -> next() }.setCancelable(false).show()
+            return
+        }
+        val g = pack[k]
+        val cont = { mainHandler.post { importItems(sid, pack, k + 1, sum, pids, next) }; Unit }
         val panels = store.panels(sid)
         val p = panels.firstOrNull { g.detected.isNotEmpty() && it.detected == g.detected }
             ?: panels.firstOrNull { it.name.trim() == g.panel.trim() }
             ?: (if (panels.size == 1 && panels[0].lastLogTs == 0L) panels[0] else null)
         val pid = p?.id ?: store.addPanel(sid, g.panel.ifBlank { "רכזת " + (panels.size + 1) })
+        val pname = store.panel(pid)?.name ?: g.panel
+        pids.add(pid)
+        sum.append("■ ").append(pname).append('\n')
+        fun notes() {
+            if (g.notes == null) return
+            val n = store.mergeNotes(pid, g.notes, g.who)
+            sum.append(if (n > 0) I18n.f("notesMerged", n) else I18n.t("notesNone")).append('\n')
+        }
         val existing = store.panelLogs(pid)
         if (existing.any { l -> try { File(l.raw).readBytes().contentEquals(g.raw) } catch (_: Exception) { false } }) {
-            siteId = sid; panelSel = pid; tab = 0; searchText = ""
-            if (g.notes == null) { toast(I18n.t("dupLog")); go(Scr.SITE); next(); return }
-            val n = store.mergeNotes(pid, g.notes, g.who)
-            go(Scr.SITE)
-            AlertDialog.Builder(this).setMessage(if (n > 0) I18n.f("notesMerged", n) else I18n.t("notesNone"))
-                .setPositiveButton(I18n.t("close")) { _, _ -> next() }.setCancelable(false).show()
-            return
+            sum.append(I18n.t("dupLog")).append('\n'); notes(); sum.append('\n'); cont(); return
+        }
+        val doIt = {
+            val before = store.panel(pid)
+            val r = store.processLog(sid, pid, g.raw, g.ts)
+            sum.append(captureMsg(before, r)).append('\n'); notes(); sum.append('\n'); cont()
         }
         val newest = existing.maxOfOrNull { it.ts } ?: 0L
-        val doIt = {
-            saveCaptured(sid, pid, g.raw, g.ts)
-            if (g.notes != null) {
-                val n = store.mergeNotes(pid, g.notes, g.who)
-                render(); toast(if (n > 0) I18n.f("notesMerged", n) else I18n.t("notesNone"))
-            }
-            next()
-        }
         if (newest > g.ts) {
-            AlertDialog.Builder(this).setMessage(I18n.f("olderLog", fmt(newest)))
+            AlertDialog.Builder(this).setTitle(pname).setMessage(I18n.f("olderLog", fmt(newest)))
                 .setPositiveButton(I18n.t("importAdd")) { _, _ -> doIt() }
-                .setNegativeButton(I18n.t("cancel")) { _, _ -> next() }
+                .setNegativeButton(I18n.t("cancel")) { _, _ -> sum.append(I18n.t("skipped")).append("\n\n"); cont() }
                 .setCancelable(false).show()
         } else doIt()
     }
@@ -1103,7 +1140,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun asIsMenu() {
         val sid = siteId ?: return
         val s = store.site(sid) ?: return
-        val panels = store.panels(sid).filter { panelSel == null || it.id == panelSel }
+        val panels = store.panels(sid)   // всегда весь объект: все רכזות в одном файле
         val logs = store.logs(sid)
         val lastLogs = ArrayList<LogRec>()
         val parts = panels.mapNotNull { p ->
@@ -1131,7 +1168,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                     val safe = s.name.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(40)
                     val out = File(store.dataDir(), "G1_${safe}_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date()) +
                         (if (he) "_he" else "_he_ru") + "_panel.pdf")
-                    ReportExport.writePdf(events, out, name, he)
+                    val heads = HashMap<Int, String>()
+                    if (parts.size > 1) { var idx = 0; for ((p, ev) in parts) { heads[idx] = p.name; idx += ev.size } }
+                    ReportExport.writePdf(events, out, if (parts.size == 1) name else s.name, he, heads)
                     if (key.startsWith("pdf")) shareFile(out, "application/pdf") else saveToDownloads(out, out.name, "application/pdf")
                 } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
             }.show()
@@ -1142,10 +1181,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val sid = siteId ?: return
         if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
         // по умолчанию: самый ранний лог → самый последний (вся работа на объекте)
-        val go = { reportMenu(panelSel, true) { _ -> 0L } }
+        val go = { reportMenu(null, true) { _ -> 0L } }   // весь объект: все רכזות в одном отчёте
         // Главное в отчёте — причины по оставшимся неисправностям: напомнить, если не заполнено
         val noComment = store.faults(sid).count {
-            it.active && !it.repaired && (panelSel == null || it.panelId == panelSel) && it.comment.isBlank() && it.action.isEmpty()
+            it.active && !it.repaired && !it.parked && it.comment.isBlank() && it.action.isEmpty()
         }
         if (noComment == 0) { go(); return }
         AlertDialog.Builder(this).setMessage(I18n.f("noCommentQ", noComment))
@@ -1158,8 +1197,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val sid = siteId ?: return
         if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
         val panels = store.panels(sid)
-        val sel = panelSel
-        if (sel != null || panels.size <= 1) { periodChoice(sel); return }
+        if (panels.size <= 1) { periodChoice(null); return }
         val labels = listOf(I18n.t("allPanels")) + panels.map { it.name }
         AlertDialog.Builder(this).setTitle(I18n.t("reportScope"))
             .setItems(labels.toTypedArray()) { _, w -> periodChoice(if (w == 0) null else panels[w - 1].id) }.show()

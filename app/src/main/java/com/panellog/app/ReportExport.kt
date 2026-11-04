@@ -74,7 +74,8 @@ object ReportExport {
     }
 
     /** PDF A4: шапка и таблица; текст переносится, иврит выравнивается справа налево. */
-    fun writePdf(events: List<PanelDecoder.PanelEvent>, out: File, siteIn: String, he: Boolean) {
+    /** heads: индекс события → заголовок раздела (רכזת), нумерация в разделе с 1. */
+    fun writePdf(events: List<PanelDecoder.PanelEvent>, out: File, siteIn: String, he: Boolean, heads: Map<Int, String> = emptyMap()) {
         val pageW = 595; val pageH = 842; val margin = 36
         val doc = PdfDocument()
 
@@ -139,10 +140,22 @@ object ReportExport {
             drawRow(headers.mapIndexed { k, s -> layout(s, headPaint, widths[k]) }, true)
         }
 
+        val panelPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 13f; typeface = Typeface.DEFAULT_BOLD; color = Color.rgb(179, 38, 30) }
         newPage()
+        var num = 0
         events.forEachIndexed { i, e ->
+            heads[i]?.let { h ->
+                val t = layout(h, panelPaint, pageW - 2 * margin)
+                if (y + t.height + 60 > pageH - margin - 16) newPage()
+                y += 10
+                page!!.canvas.save(); page!!.canvas.translate(margin.toFloat(), y); t.draw(page!!.canvas); page!!.canvas.restore()
+                y += t.height + 4
+                drawRow(headers.mapIndexed { k, s -> layout(s, headPaint, widths[k]) }, true)
+                num = 0
+            }
+            num++
             val texts = listOf(
-                (i + 1).toString(),
+                num.toString(),
                 if (e.isSystem) "—" else e.address + (if (e.zone.isNotEmpty()) "\n" + e.zone else ""),
                 if (e.isSystem) (if (he) "מערכת" else "מערכת\nсистема") else {
                     val h = PanelDecoder.typeHe(e.devType); val r = PanelDecoder.typeRu(e.devType)
