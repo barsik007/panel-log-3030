@@ -468,7 +468,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 .any { s -> s.lowercase().contains(q) }
         }.let { fs -> if (tab == 1) fs.sortedByDescending { it.resolvedTs } else fs.sortedBy {
             // сверху — что ещё нужно устранить; ниже «не актуально»; в самом конце «починил»
-            when { it.active && it.repaired -> 2; it.parked -> 1; else -> 0 }
+            when { it.hidden -> 3; it.active && it.repaired -> 2; it.parked -> 1; else -> 0 }
         } }
         if (faults.isEmpty()) {
             list.addView(tv(I18n.t("noFaults"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
@@ -492,8 +492,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (badges.isNotEmpty()) c.addView(tv(badges, 13f, color = Color.rgb(30, 63, 138)).apply { setPadding(0, dp(4), 0, 0) })
         warning(f)?.let { c.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
         c.setOnClickListener { faultId = f.id; go(Scr.FAULT) }
+        c.setOnLongClickListener { faultLongMenu(f); true }
         if (f.parked) c.alpha = 0.4f  // «не актуально» — бледная
-        if (f.active && f.repaired) {  // «Починил» — бледно-розовая, не бросается в глаза
+        if (f.hidden) c.alpha = 0.3f  // убрана из отчёта
+        else if (f.active && f.repaired) {  // «Починил» — бледно-розовая, не бросается в глаза
             c.background = rounded(Color.rgb(253, 232, 239), 12, Color.rgb(244, 200, 215))
             c.alpha = 0.6f
         }
@@ -519,10 +521,23 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         else if (logCount > 1 && f.firstSeen == lastTs) b.add(I18n.t("stNew"))
         if (f.recur > 0) b.add(I18n.f("stRecur", f.recur))
         if (f.active && f.repaired) b.add(I18n.f("stRepaired", fmtD(f.fixedTs)))
+        if (f.hidden) b.add(I18n.t("stHidden"))
         if (f.parked) b.add(I18n.t("stParked"))
         if (f.billable) b.add(I18n.t("stBill"))
         if (f.action.isNotEmpty()) b.add("✔ " + store.actionText(f.action))
         return b.joinToString("  ")
+    }
+
+    /** Долгое нажатие на ошибку: убрать из отчёта / вернуть / удалить совсем. */
+    private fun faultLongMenu(f: Fault) {
+        val title = (if (f.isSystem) I18n.t("system") else f.address) + " · " + I18n.panel(f.problem)
+        AlertDialog.Builder(this).setTitle(title)
+            .setItems(arrayOf(I18n.t(if (f.hidden) "unhideFault" else "hideFault"), I18n.t("deleteFault"))) { _, w ->
+                if (w == 0) { store.setHidden(f.id, !f.hidden); fillFaultList() }
+                else AlertDialog.Builder(this).setMessage(I18n.t("deleteFaultQ"))
+                    .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteFault(f.id); render() }
+                    .setNegativeButton(I18n.t("cancel"), null).show()
+            }.show()
     }
 
     private fun warning(f: Fault): String? {
@@ -1184,7 +1199,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val go = { reportMenu(null, true) { _ -> 0L } }   // весь объект: все רכזות в одном отчёте
         // Главное в отчёте — причины по оставшимся неисправностям: напомнить, если не заполнено
         val noComment = store.faults(sid).count {
-            it.active && !it.repaired && !it.parked && it.comment.isBlank() && it.action.isEmpty()
+            it.active && !it.repaired && !it.parked && !it.hidden && it.comment.isBlank() && it.action.isEmpty()
         }
         if (noComment == 0) { go(); return }
         AlertDialog.Builder(this).setMessage(I18n.f("noCommentQ", noComment))

@@ -32,7 +32,9 @@ data class Fault(
     /** «Не актуально»: на утверждении / в согласовании — не трогать. */
     val parked: Boolean = false,
     /** «Починил»: отмечено вручную (время); подтвердится, когда панель перестанет её показывать. */
-    val fixedTs: Long = 0
+    val fixedTs: Long = 0,
+    /** Убрана из отчёта вручную (долгое нажатие). */
+    val hidden: Boolean = false
 ) {
     val repaired: Boolean get() = fixedTs > 0
     val isSystem: Boolean get() = address.isEmpty()
@@ -68,13 +70,13 @@ data class PeriodReport(val site: Site, val from: Long, val to: Long, val panels
 }
 
 /** Локальная база: объекты, логи, неисправности, история, фото. ID — UUID (готово к синхронизации). */
-class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 4) {
+class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE sites(id TEXT PRIMARY KEY, name TEXT, address TEXT, note TEXT, panel TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE panels(id TEXT PRIMARY KEY, site_id TEXT, name TEXT, detected TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE logs(id TEXT PRIMARY KEY, site_id TEXT, ts INTEGER, raw TEXT, events INTEGER, panel_id TEXT)")
-        db.execSQL("CREATE TABLE faults(id TEXT PRIMARY KEY, site_id TEXT, fkey TEXT, address TEXT, zone TEXT, dev_type TEXT, problem TEXT, label TEXT, label2 TEXT, node TEXT, first_seen INTEGER, last_seen INTEGER, active INTEGER, resolved_ts INTEGER, recur INTEGER, billable INTEGER, action TEXT, comment TEXT, updated INTEGER, panel_id TEXT, parked INTEGER DEFAULT 0, fixed_ts INTEGER DEFAULT 0)")
+        db.execSQL("CREATE TABLE faults(id TEXT PRIMARY KEY, site_id TEXT, fkey TEXT, address TEXT, zone TEXT, dev_type TEXT, problem TEXT, label TEXT, label2 TEXT, node TEXT, first_seen INTEGER, last_seen INTEGER, active INTEGER, resolved_ts INTEGER, recur INTEGER, billable INTEGER, action TEXT, comment TEXT, updated INTEGER, panel_id TEXT, parked INTEGER DEFAULT 0, fixed_ts INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0)")
         db.execSQL("CREATE TABLE log_faults(log_id TEXT, fault_id TEXT)")
         db.execSQL("CREATE TABLE history(id TEXT PRIMARY KEY, fault_id TEXT, ts INTEGER, kind TEXT, text TEXT)")
         db.execSQL("CREATE TABLE photos(id TEXT PRIMARY KEY, fault_id TEXT, path TEXT, ts INTEGER)")
@@ -106,6 +108,8 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 4) 
         if (oldVersion < 3) db.execSQL("ALTER TABLE faults ADD COLUMN parked INTEGER DEFAULT 0")
         // v3 → v4: отметка «Починил»
         if (oldVersion < 4) db.execSQL("ALTER TABLE faults ADD COLUMN fixed_ts INTEGER DEFAULT 0")
+        // v4 → v5: «убрать из отчёта»
+        if (oldVersion < 5) db.execSQL("ALTER TABLE faults ADD COLUMN hidden INTEGER DEFAULT 0")
     }
 
     private fun uuid() = UUID.randomUUID().toString()
@@ -320,10 +324,10 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 4) 
         c.getString(6) ?: "", c.getString(7) ?: "", c.getString(8) ?: "", c.getString(9) ?: "",
         c.getLong(10), c.getLong(11), c.getInt(12) == 1, c.getLong(13), c.getInt(14), c.getInt(15) == 1,
         c.getString(16) ?: "", c.getString(17) ?: "", c.getString(18) ?: "",
-        c.getInt(19) == 1, c.getLong(20)
+        c.getInt(19) == 1, c.getLong(20), c.getInt(21) == 1
     )
 
-    private val FCOLS = "id,site_id,fkey,address,zone,dev_type,problem,label,label2,node,first_seen,last_seen,active,resolved_ts,recur,billable,action,comment,panel_id,parked,fixed_ts"
+    private val FCOLS = "id,site_id,fkey,address,zone,dev_type,problem,label,label2,node,first_seen,last_seen,active,resolved_ts,recur,billable,action,comment,panel_id,parked,fixed_ts,hidden"
 
     fun faults(siteId: String): List<Fault> =
         query("SELECT $FCOLS FROM faults WHERE site_id=?", arrayOf(siteId)) { faultFrom(it) }
@@ -363,6 +367,21 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 4) 
         val t = now()
         writableDatabase.update("faults", ContentValues().apply { put("fixed_ts", if (b) t else 0L); put("updated", t) }, "id=?", arrayOf(faultId))
         addHistory(faultId, t, if (b) "repaired" else "unrepaired", "")
+    }
+
+    fun setHidden(faultId: String, b: Boolean) {
+        writableDatabase.update("faults", ContentValues().apply { put("hidden", if (b) 1 else 0); put("updated", now()) }, "id=?", arrayOf(faultId))
+        addHistory(faultId, now(), if (b) "hidden" else "unhidden", "")
+    }
+
+    /** Удалить ошибку полностью (если панель покажет её снова — появится как новая). */
+    fun deleteFault(faultId: String) {
+        val db = writableDatabase
+        for (p in photos(faultId)) try { File(p.path).delete() } catch (_: Exception) {}
+        db.delete("photos", "fault_id=?", arrayOf(faultId))
+        db.delete("history", "fault_id=?", arrayOf(faultId))
+        db.delete("log_faults", "fault_id=?", arrayOf(faultId))
+        db.delete("faults", "id=?", arrayOf(faultId))
     }
 
     fun setComment(faultId: String, text: String) {
@@ -432,7 +451,7 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 4) 
     /** Период от fromTs до последнего лога — по каждой панели отдельно (или по одной). */
     fun period(siteId: String, onlyPanel: String?, fromFor: (List<LogRec>) -> Long): PeriodReport? {
         val site = site(siteId) ?: return null
-        val byId = faults(siteId).associateBy { it.id }
+        val byId = faults(siteId).filter { !it.hidden }.associateBy { it.id }   // убранные вручную — не в отчёте
         fun list(ids: Collection<String>) = ids.mapNotNull { byId[it] }
             .sortedWith(compareBy<Fault>({ it.isSystem }, { it.address }))
         val sections = ArrayList<PanelSection>()
