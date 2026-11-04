@@ -469,7 +469,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 .any { s -> s.lowercase().contains(q) }
         }.let { fs -> if (tab == 1) fs.sortedByDescending { it.resolvedTs } else fs.sortedBy {
             // сверху — что ещё нужно устранить; ниже «не актуально»; в самом конце «починил»
-            when { it.hidden -> 3; it.active && it.repaired -> 2; it.parked -> 1; else -> 0 }
+            // ошибки панели → «не актуально» → записи техника → «починил» → убранные из отчёта
+            when { it.hidden -> 4; it.active && it.repaired -> 3; it.isManual -> 2; it.parked -> 1; else -> 0 }
         } }
         if (faults.isEmpty()) {
             list.addView(tv(I18n.t("noFaults"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
@@ -503,6 +504,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         c.setOnClickListener { faultId = f.id; go(Scr.FAULT) }
         c.setOnLongClickListener { faultLongMenu(f); true }
         if (f.parked) c.alpha = 0.4f  // «не актуально» — бледная
+        if (f.isManual && !f.hidden && !(f.active && f.repaired))  // запись техника — светло-жёлтая, неброская
+            c.background = rounded(Color.rgb(255, 250, 225), 12, Color.rgb(238, 226, 170))
         if (f.hidden) c.alpha = 0.3f  // убрана из отчёта
         else if (f.active && f.repaired) {  // «Починил» — бледно-розовая, не бросается в глаза
             c.background = rounded(Color.rgb(253, 232, 239), 12, Color.rgb(244, 200, 215))
