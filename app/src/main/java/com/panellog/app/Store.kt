@@ -37,7 +37,9 @@ data class Fault(
     val hidden: Boolean = false
 ) {
     val repaired: Boolean get() = fixedTs > 0
-    val isSystem: Boolean get() = address.isEmpty()
+    /** Ручная запись техника (не из панели): кнопка сломана, нет таблички и т.п. */
+    val isManual: Boolean get() = key.startsWith("MAN|")
+    val isSystem: Boolean get() = address.isEmpty() && !isManual
     val loop: String get() = Regex("L(\\d{2})").find(address)?.groupValues?.get(1) ?: ""
 }
 
@@ -297,7 +299,7 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
                 db.insert("log_faults", null, ContentValues().apply { put("log_id", logId); put("fault_id", faultId) })
             }
             for (f in existing.values) {
-                if (f.active && !byKey.containsKey(f.key)) {
+                if (f.active && !f.isManual && !byKey.containsKey(f.key)) {   // ручные записи панель не закрывает
                     db.update("faults", ContentValues().apply {
                         put("active", 0); put("resolved_ts", ts); put("updated", ts)
                     }, "id=?", arrayOf(f.id))
@@ -369,6 +371,27 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
         addHistory(faultId, t, if (b) "repaired" else "unrepaired", "")
     }
 
+    /** Новая ручная запись по объекту. */
+    fun addManual(siteId: String, panelId: String, address: String, problem: String, place: String, billable: Boolean,
+                  key: String = "MAN|" + uuid(), ts: Long = now()): String {
+        val id = uuid()
+        writableDatabase.insert("faults", null, ContentValues().apply {
+            put("id", id); put("site_id", siteId); put("fkey", key)
+            put("address", address); put("zone", ""); put("dev_type", ""); put("problem", problem)
+            put("label", place); put("label2", ""); put("node", "")
+            put("first_seen", ts); put("last_seen", ts); put("active", 1); put("resolved_ts", 0)
+            put("recur", 0); put("billable", if (billable) 1 else 0); put("action", ""); put("comment", ""); put("updated", ts); put("panel_id", panelId)
+        })
+        addHistory(id, ts, "manual", "")
+        return id
+    }
+
+    fun updateManual(id: String, address: String, problem: String, place: String) {
+        writableDatabase.update("faults", ContentValues().apply {
+            put("address", address); put("problem", problem); put("label", place); put("updated", now())
+        }, "id=?", arrayOf(id))
+    }
+
     fun setHidden(faultId: String, b: Boolean) {
         writableDatabase.update("faults", ContentValues().apply { put("hidden", if (b) 1 else 0); put("updated", now()) }, "id=?", arrayOf(faultId))
         addHistory(faultId, now(), if (b) "hidden" else "unhidden", "")
@@ -393,9 +416,11 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
     fun notesJson(panelId: String): JSONArray {
         val a = JSONArray()
         for (f in query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }) {
-            if (f.comment.isBlank() && f.action.isEmpty() && !f.billable && !f.parked && !f.repaired) continue
+            if (!f.isManual && f.comment.isBlank() && f.action.isEmpty() && !f.billable && !f.parked && !f.repaired) continue
+            if (f.hidden) continue
             a.put(JSONObject().put("key", f.key).put("comment", f.comment).put("action", f.action)
-                .put("billable", f.billable).put("parked", f.parked).put("fixed", f.repaired && f.active))
+                .put("billable", f.billable).put("parked", f.parked).put("fixed", f.repaired && f.active)
+                .apply { if (f.isManual) put("manual", true).put("address", f.address).put("problem", f.problem).put("place", f.label).put("ts", f.firstSeen) })
         }
         return a
     }
@@ -406,7 +431,14 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
         var changed = 0
         for (i in 0 until notes.length()) {
             val n = notes.optJSONObject(i) ?: continue
-            val f = mine[n.optString("key")] ?: continue
+            var f = mine[n.optString("key")]
+            if (f == null && n.optBoolean("manual")) {   // ручная запись другого техника — создать у себя
+                val sid = panel(panelId)?.siteId ?: continue
+                val id = addManual(sid, panelId, n.optString("address"), n.optString("problem"), n.optString("place"), false,
+                    n.optString("key"), n.optLong("ts").takeIf { it > 0 } ?: now())
+                f = fault(id); changed++
+            }
+            if (f == null) continue
             var ch = false
             val t = n.optString("comment").trim()
             val m = f.comment.trim()
@@ -458,22 +490,29 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
         for (p in panels(siteId)) {
             if (onlyPanel != null && p.id != onlyPanel) continue
             val all = panelLogs(p.id).sortedBy { it.ts }
-            if (all.isEmpty()) continue
-            val fromTs = fromFor(all)
+            val manual = byId.values.filter { it.panelId == p.id && it.isManual }
+            if (all.isEmpty() && manual.isEmpty()) continue
+            val fromTs = if (all.isEmpty()) 0L else fromFor(all)
             val inRange = all.filter { it.ts >= fromTs }
-            if (inRange.isEmpty()) continue
-            val a = logFaultIds(inRange.first().id)
-            val b = logFaultIds(inRange.last().id)
+            if (inRange.isEmpty() && manual.isEmpty()) continue
+            val a = if (inRange.isEmpty()) HashSet() else logFaultIds(inRange.first().id).toHashSet()
+            val b = if (inRange.isEmpty()) HashSet() else logFaultIds(inRange.last().id).toHashSet()
             val union = HashSet<String>()
             for (l in inRange) union.addAll(logFaultIds(l.id))
+            // ручные записи: открытые — как «оставшиеся», «починил» — как устранённые
+            for (m in manual) {
+                if (m.active) { union.add(m.id); a.add(m.id); b.add(m.id) }
+            }
             val billable = list(union.filter { byId[it]?.billable == true })
             val billIds = billable.map { it.id }.toSet()
             // «Починил» (ещё видна в панели, но отмечена) — считается устранённой
             val rep = union.filter { byId[it]?.let { f -> f.active && f.repaired } == true }.toSet()
             val fixed = list(union.filter { (it !in b || it in rep) && it !in billIds })
             val added = if (inRange.size > 1) list(b.filter { it !in a && it !in billIds && it !in rep }) else emptyList()
-            val remaining = list(b.filter { (inRange.size == 1 || it in a) && it !in billIds && it !in rep })
-            sections.add(PanelSection(p, inRange.first().ts, inRange.last().ts, inRange.size, billable, fixed, added, remaining))
+            val remaining = list(b.filter { (inRange.size <= 1 || it in a) && it !in billIds && it !in rep })
+            val t0 = if (inRange.isEmpty()) manual.minOf { it.firstSeen } else inRange.first().ts
+            val t1 = if (inRange.isEmpty()) manual.maxOf { it.lastSeen } else inRange.last().ts
+            sections.add(PanelSection(p, t0, t1, inRange.size, billable, fixed, added, remaining))
         }
         if (sections.isEmpty()) return null
         return PeriodReport(site, sections.minOf { it.from }, sections.maxOf { it.to }, sections)

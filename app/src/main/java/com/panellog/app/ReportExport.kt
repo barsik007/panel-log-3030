@@ -225,12 +225,13 @@ object PeriodExport {
     }
 
     private fun problem(f: Fault, heOnly: Boolean): String {
-        if (heOnly) return f.problem
+        if (heOnly || f.isManual) return f.problem
         val ru = PanelDecoder.ru(f.problem) ?: AutoTr.get(f.problem) ?: return f.problem
         return "${f.problem} ($ru)"
     }
 
     private fun type(f: Fault, heOnly: Boolean): String {
+        if (f.isManual) return if (heOnly) "✍ רישום טכנאי" else "✍ רישום טכנאי (запись техника)"
         if (f.isSystem) return if (heOnly) "מערכת" else "מערכת (система)"
         val h = PanelDecoder.typeHe(f.devType)
         val r = PanelDecoder.typeRu(f.devType)
@@ -275,7 +276,7 @@ object PeriodExport {
             sb.append("\n*").append(s.he).append(if (heOnly) "" else " / " + s.ru).append(" (").append(s.items.size).append("):*\n")
             s.items.forEachIndexed { i, f ->
                 sb.append(i + 1).append(". ")
-                if (!f.isSystem) sb.append(f.address).append(" · ")
+                if (f.address.isNotEmpty()) sb.append(f.address).append(" · ")
                 sb.append(type(f, heOnly)).append(" — ").append(problem(f, heOnly)).append('\n')
                 val p = place(f, heOnly)
                 if (p.isNotEmpty()) sb.append("    📍 ").append(p).append('\n')
@@ -388,7 +389,7 @@ object PeriodExport {
             s.items.forEachIndexed { i, f ->
                 val texts = listOf(
                     (i + 1).toString(),
-                    if (f.isSystem) "—" else f.address + (if (f.zone.isNotEmpty()) "\n" + f.zone else ""),
+                    if (f.address.isEmpty()) "—" else f.address + (if (f.zone.isNotEmpty()) "\n" + f.zone else ""),
                     type(f, heOnly),
                     problem(f, heOnly) + tags(f, ps, heOnly).let { if (it.isEmpty()) "" else "\n$it" },
                     place(f, heOnly).ifEmpty { "—" },

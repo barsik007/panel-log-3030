@@ -376,6 +376,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         for (p in panels) chips.addView(chip(p.name + " · " + p.activeCount, panelSel == p.id || panels.size == 1,
             { panelSel = p.id; render() }, { panelMenu(p) }), chipLp())
         chips.addView(chip(I18n.t("newPanel"), false, { panelDialog(null) }), chipLp())
+        chips.addView(chip(I18n.t("newEntry"), false, { choosePanelThen { capturePanelId?.let { entryDialog(null, it) } } }), chipLp())
         box.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) })
 
         // 2×2: снять лог · как есть / отчёт · логи для Claude
@@ -390,7 +391,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
         val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
         val faults = store.faults(s.id).filter { panelSel == null || it.panelId == panelSel }
-        if (logs.isEmpty()) {
+        if (logs.isEmpty() && faults.isEmpty()) {
             box.addView(tv(I18n.t("noLogsYet"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(14), 0, 0) })
             return sv
         }
@@ -405,7 +406,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 fixedN += a.count { it !in b }; newN += b.count { it !in a }
             }
         }
-        box.addView(tv(I18n.f("summary", fmt(logs[0].ts), active, fixedN, newN), 13f, color = Color.rgb(60, 66, 75))
+        if (logs.isNotEmpty()) box.addView(tv(I18n.f("summary", fmt(logs[0].ts), active, fixedN, newN), 13f, color = Color.rgb(60, 66, 75))
             .apply { setPadding(0, dp(10), 0, dp(2)) })
         // подсказки по шлейфам
         val pName = panels.associate { it.id to it.name }
@@ -483,10 +484,11 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private fun faultRow(f: Fault, lastTs: Long, logCount: Int, panelTag: String): View {
         val c = card()
         if (panelTag.isNotEmpty()) c.addView(tv(panelTag, 12f, true, Color.rgb(179, 38, 30)))
-        val head = (if (f.isSystem) I18n.t("system") + (if (f.node.isNotEmpty()) " · " + f.node else "")
+        val head = (if (f.isManual) I18n.t("manualEntry") + (if (f.address.isNotEmpty()) " · " + f.address else "")
+            else if (f.isSystem) I18n.t("system") + (if (f.node.isNotEmpty()) " · " + f.node else "")
             else f.address + (if (f.devType.isNotEmpty()) " · " + I18n.devType(f.devType) else ""))
         c.addView(tv(head, 15f, true))
-        c.addView(tv(I18n.panel(f.problem), 14f))
+        c.addView(tv(if (f.isManual) f.problem else I18n.panel(f.problem), 14f))
         addPlace(c, if (f.isSystem) listOf() else listOf(f.label, f.label2), 15f)
         val badges = statusBadges(f, lastTs, logCount)
         if (badges.isNotEmpty()) c.addView(tv(badges, 13f, color = Color.rgb(30, 63, 138)).apply { setPadding(0, dp(4), 0, 0) })
@@ -528,9 +530,31 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         return b.joinToString("  ")
     }
 
+    /** Ручная запись по объекту: место, что не так, адрес (необязательно), ₪. Фото — в карточке. */
+    private fun entryDialog(edit: Fault?, panelId: String) {
+        val sid = siteId ?: return
+        val what = input(I18n.t("entryWhat"), edit?.problem ?: "", true)
+        val place = input(I18n.t("entryPlace"), edit?.label ?: "")
+        val addr = input(I18n.t("entryAddr"), edit?.address ?: "").apply { setSingleLine() }
+        val bill = CheckBox(this).apply { text = "₪ " + I18n.t("billable"); isChecked = edit?.billable ?: false }
+        val box = dialogBox().apply { addView(what); addView(place); addView(addr); if (edit == null) addView(bill) }
+        AlertDialog.Builder(this).setTitle(I18n.t("entryTitle")).setView(box)
+            .setPositiveButton(I18n.t("ok")) { _, _ ->
+                val w = what.text.toString().trim()
+                if (w.isEmpty()) { toast(I18n.t("entryEmpty")); return@setPositiveButton }
+                val pl = place.text.toString().trim(); val ad = addr.text.toString().trim().uppercase()
+                if (edit == null) {
+                    faultId = store.addManual(sid, panelId, ad, w, pl, bill.isChecked)
+                    tab = 0; go(Scr.FAULT)   // сразу в карточку — добавить фото
+                } else { store.updateManual(edit.id, ad, w, pl); render() }
+            }
+            .setNegativeButton(I18n.t("cancel"), null).show()
+    }
+
     /** Долгое нажатие на ошибку: убрать из отчёта / вернуть / удалить совсем. */
     private fun faultLongMenu(f: Fault) {
-        val title = (if (f.isSystem) I18n.t("system") else f.address) + " · " + I18n.panel(f.problem)
+        val title = (if (f.isManual) I18n.t("manualEntry") else if (f.isSystem) I18n.t("system") else f.address) + " · " +
+            (if (f.isManual) f.problem else I18n.panel(f.problem))
         AlertDialog.Builder(this).setTitle(title)
             .setItems(arrayOf(I18n.t(if (f.hidden) "unhideFault" else "hideFault"), I18n.t("deleteFault"))) { _, w ->
                 if (w == 0) { store.setHidden(f.id, !f.hidden); fillFaultList() }
@@ -556,14 +580,16 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val logs = store.panelLogs(f.panelId)
         val pn = store.panel(f.panelId)
         if (pn != null) box.addView(tv(pn.name, 13f, true, Color.rgb(179, 38, 30)))
-        val head = if (f.isSystem) I18n.t("system") else f.address
+        val head = if (f.isManual) I18n.t("manualEntry") + (if (f.address.isNotEmpty()) " · " + f.address else "")
+            else if (f.isSystem) I18n.t("system") else f.address
         box.addView(tv(head, 22f, true))
-        box.addView(tv(I18n.panel(f.problem), 17f, true).apply { setPadding(0, dp(4), 0, 0) })
+        box.addView(tv(if (f.isManual) f.problem else I18n.panel(f.problem), 17f, true).apply { setPadding(0, dp(4), 0, 0) })
+        if (f.isManual) box.addView(btn(I18n.t("editEntry")) { saveCommentIfAny(); entryDialog(f, f.panelId) })
         val info = card()
         val placeParts = if (f.isSystem) listOf(f.node) else listOf(f.label, f.label2)
         if (!I18n.he) AutoTr.request(placeParts + f.problem)
         addPlace(info, placeParts, 16f)
-        if (!f.isSystem) {
+        if (!f.isSystem && !f.isManual) {
             info.addView(tv(I18n.t("type") + ": " + I18n.devType(f.devType) +
                 (if (f.zone.isNotEmpty()) "   " + I18n.t("zone") + ": " + f.zone else ""), 14f))
         }
@@ -1194,7 +1220,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     /** «Отчёт»: от самого раннего лога до самого последнего. */
     private fun sendMenu() {
         val sid = siteId ?: return
-        if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
+        if (store.logs(sid).isEmpty() && store.faults(sid).none { it.isManual }) { toast(I18n.t("noLogsForReport")); return }
         // по умолчанию: самый ранний лог → самый последний (вся работа на объекте)
         val go = { reportMenu(null, true) { _ -> 0L } }   // весь объект: все רכזות в одном отчёте
         // Главное в отчёте — причины по оставшимся неисправностям: напомнить, если не заполнено
@@ -1210,7 +1236,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     private fun periodMenu() {
         val sid = siteId ?: return
-        if (store.logs(sid).isEmpty()) { toast(I18n.t("noLogsForReport")); return }
+        if (store.logs(sid).isEmpty() && store.faults(sid).none { it.isManual }) { toast(I18n.t("noLogsForReport")); return }
         val panels = store.panels(sid)
         if (panels.size <= 1) { periodChoice(null); return }
         val labels = listOf(I18n.t("allPanels")) + panels.map { it.name }
