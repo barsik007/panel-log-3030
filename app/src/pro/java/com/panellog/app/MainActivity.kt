@@ -1229,11 +1229,22 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         // Иврит в настройках — только иврит; русский — выбор: иврит или иврит + перевод
         val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
             else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
-        val labels = opts.map { I18n.t(it.first) } + (if (withOther) listOf(I18n.t("otherPeriod")) else emptyList())
+        // + «Проделанная работа» — для себя (устранённое), начальнику не отправляется
+        val workItems = listOf(I18n.t("workSave"), I18n.t("workShare"))
+        val labels = opts.map { I18n.t(it.first) } + workItems + (if (withOther) listOf(I18n.t("otherPeriod")) else emptyList())
         AlertDialog.Builder(this).setTitle(r.site.name + " · " + SimpleDateFormat("dd.MM", Locale.US).format(Date(r.from)) +
                 (if (fmtD(r.from) != fmtD(r.to)) "–" + fmtD(r.to) else ""))
             .setItems(labels.toTypedArray()) { _, w ->
-                if (w >= opts.size) { periodMenu(); return@setItems }
+                if (w == opts.size || w == opts.size + 1) {
+                    val heW = I18n.he
+                    try {
+                        val out = File(store.dataDir(), reportName(r, heW).replace(".pdf", "_work.pdf"))
+                        PeriodExport.pdf(r, store, heW, out, work = true)
+                        if (w == opts.size) saveToDownloads(out, out.name, "application/pdf") else shareFile(out, "application/pdf")
+                    } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
+                    return@setItems
+                }
+                if (w > opts.size + 1) { periodMenu(); return@setItems }
                 val (key, heOnly) = opts[w]
                 when {
                     key.startsWith("wa") -> shareWhatsapp(PeriodExport.whatsapp(r, store, heOnly))

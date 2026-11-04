@@ -197,28 +197,31 @@ object PeriodExport {
     private fun fixedOf(r: PanelSection): List<Fault> =
         (r.fixed + r.billable.filter { !it.active || it.repaired }).sortedWith(compareBy<Fault>({ it.isSystem }, { it.address }))
 
-    private fun sections(r: PanelSection) = listOf(
-        Sec("תקלות שנשארו פתוחות", "Остались неисправности", openOf(r)),
-        Sec("תוקן", "Устранено", fixedOf(r))
-    )
+    /** Начальнику — только активные (оставшиеся) с комментариями; «для себя» — только проделанная работа. */
+    private fun sections(r: PanelSection, work: Boolean) =
+        if (!work) listOf(Sec("תקלות פעילות", "Активные неисправности", openOf(r)))
+        else listOf(Sec("תוקן", "Устранено", fixedOf(r)))
 
     /** Пометки в строке: ₪ к оплате, 🆕 новая, 🔁 повторная. */
     private fun tags(f: Fault, r: PanelSection, heOnly: Boolean): String {
         val t = ArrayList<String>()
         if (f.repaired) t.add(if (heOnly) "🔧 תוקן ע״י הטכנאי" else "🔧 תוקן ע״י הטכנאי (починено техником)")
         if (f.billable) t.add(if (heOnly) "₪ לתשלום" else "₪ לתשלום (к оплате)")
+        if (f.parked) t.add(if (heOnly) "⏸ ממתין לאישור" else "⏸ ממתין לאישור (на утверждении)")
         if (r.added.any { it.id == f.id }) t.add(if (heOnly) "🆕 חדש" else "🆕 חדש (новая)")
         if (f.recur > 0) t.add("🔁 ×" + f.recur)
         return t.joinToString("  ")
     }
 
-    private fun countsLine(r: PeriodReport, heOnly: Boolean): String {
+    private fun countsLine(r: PeriodReport, heOnly: Boolean, work: Boolean = false): String {
         val open = r.panels.sumOf { openOf(it).size }
         val bill = r.panels.sumOf { p -> openOf(p).count { it.billable } }
-        val newN = r.panels.sumOf { it.added.size }
         val fixed = r.panels.sumOf { fixedOf(it).size }
-        return if (heOnly) "נשארו פתוחות: $open (לתשלום $bill, חדשות $newN) · תוקנו: $fixed"
-            else "Осталось: $open (к оплате $bill, новых $newN) · устранено: $fixed"
+        val byTech = r.panels.sumOf { p -> fixedOf(p).count { it.repaired } }
+        if (work) return if (heOnly) "תוקנו: $fixed (מהן סומנו ע״י הטכנאי: $byTech) · נשארו פתוחות: $open"
+            else "Устранено: $fixed (из них отмечено техником: $byTech) · осталось: $open"
+        return if (heOnly) "תקלות פעילות: $open (לתשלום $bill)"
+            else "Активных неисправностей: $open (к оплате $bill)"
     }
 
     private fun problem(f: Fault, heOnly: Boolean): String {
@@ -250,18 +253,25 @@ object PeriodExport {
         return parts.joinToString(" — ")
     }
 
-    fun whatsapp(r: PeriodReport, store: Store, heOnly: Boolean): String {
+    private fun titleOf(heOnly: Boolean, work: Boolean) = when {
+        work && heOnly -> "סיכום עבודה"
+        work -> "סיכום עבודה · Проделанная работа"
+        heOnly -> "דוח תקלות רכזת"
+        else -> "דוח תקלות רכזת · Отчёт о неисправностях"
+    }
+
+    fun whatsapp(r: PeriodReport, store: Store, heOnly: Boolean, work: Boolean = false): String {
         val sb = StringBuilder()
         sb.append("*").append(r.site.name).append("*\n")
-        sb.append(if (heOnly) "דוח תקלות רכזת · " else "דוח תקלות רכזת · Отчёт · ").append(periodText(r)).append("\n")
-        sb.append(countsLine(r, heOnly)).append("\n")
+        sb.append(titleOf(heOnly, work)).append(" · ").append(if (work) periodText(r) else d(r.to)).append("\n")
+        sb.append(countsLine(r, heOnly, work)).append("\n")
         for (ps in r.panels) {
         sb.append("\n━━ *").append(ps.panel.name).append("*")
         if (ps.panel.detected.isNotEmpty() && ps.panel.detected != ps.panel.name) sb.append(" (").append(ps.panel.detected).append(")")
         sb.append(" ━━\n")
-        for ((si, s) in sections(ps).withIndex()) {
+        for (s in sections(ps, work)) {
             if (s.items.isEmpty()) continue
-            val openSec = si == 0
+            val openSec = !work
             sb.append("\n*").append(s.he).append(if (heOnly) "" else " / " + s.ru).append(" (").append(s.items.size).append("):*\n")
             s.items.forEachIndexed { i, f ->
                 sb.append(i + 1).append(". ")
@@ -280,7 +290,7 @@ object PeriodExport {
         return sb.toString().trimEnd()
     }
 
-    fun pdf(r: PeriodReport, store: Store, heOnly: Boolean, out: File) {
+    fun pdf(r: PeriodReport, store: Store, heOnly: Boolean, out: File, work: Boolean = false) {
         val pageW = 595; val pageH = 842; val margin = 30
         val doc = PdfDocument()
         val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 15f; typeface = Typeface.DEFAULT_BOLD; color = Color.BLACK }
@@ -340,18 +350,20 @@ object PeriodExport {
         // Шапка
         newPage(false)
         val align = if (heOnly) Layout.Alignment.ALIGN_OPPOSITE else Layout.Alignment.ALIGN_NORMAL
-        val title = layout((if (heOnly) "דוח תקלות רכזת" else "דוח תקלות רכזת · Отчёт о неисправностях") + "\n" + r.site.name, titlePaint, content, Layout.Alignment.ALIGN_NORMAL)
+        val title = layout(titleOf(heOnly, work) + "\n" + r.site.name, titlePaint, content, Layout.Alignment.ALIGN_NORMAL)
         drawLayout(title, margin.toFloat()); y += title.height + 4
         val metaText = buildString {
             if (r.site.address.isNotEmpty()) append(r.site.address).append('\n')
             if (heOnly) {
-                append("תקופה: ").append(periodText(r)).append("   קריאות: ").append(r.logsCount)
+                if (work) append("תקופה: ").append(periodText(r)).append("   קריאות: ").append(r.logsCount)
+                else append("תאריך: ").append(d(r.to))
                 append("   רכזות: ").append(r.panels.size).append('\n')
-                append(countsLine(r, true))
+                append(countsLine(r, true, work))
             } else {
-                append("Период: ").append(periodText(r)).append("   Логов: ").append(r.logsCount)
+                if (work) append("Период: ").append(periodText(r)).append("   Логов: ").append(r.logsCount)
+                else append("Дата: ").append(d(r.to))
                 append("   Панелей (רכזות): ").append(r.panels.size).append('\n')
-                append(countsLine(r, false))
+                append(countsLine(r, false, work))
             }
         }
         val meta = layout(metaText, metaPaint, content, Layout.Alignment.ALIGN_NORMAL)
@@ -361,12 +373,12 @@ object PeriodExport {
         val panelPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 13f; typeface = Typeface.DEFAULT_BOLD; color = Color.rgb(179, 38, 30) }
         for (ps in r.panels) {
         val pTitle = layout(ps.panel.name + (if (ps.panel.detected.isNotEmpty() && ps.panel.detected != ps.panel.name) " · " + ps.panel.detected else "") +
-            "   (" + periodText2(ps.from, ps.to) + (if (heOnly) ", קריאות: " else ", логов: ") + ps.logsCount + ")", panelPaint, content, align)
+            (if (work) "   (" + periodText2(ps.from, ps.to) + (if (heOnly) ", קריאות: " else ", логов: ") + ps.logsCount + ")" else ""), panelPaint, content, align)
         if (y + pTitle.height + 60 > bottom) newPage(false)
         y += 10
         drawLayout(pTitle, margin.toFloat()); y += pTitle.height + 2
         page!!.canvas.drawLine(margin.toFloat(), y, (pageW - margin).toFloat(), y, line)
-        for (s in sections(ps)) {
+        for (s in sections(ps, work)) {
             if (s.items.isEmpty()) continue
             val secTitle = layout(s.he + (if (heOnly) "" else " / " + s.ru) + " (" + s.items.size + ")", secPaint, content, align)
             if (y + secTitle.height + 40 > bottom) newPage(false)
