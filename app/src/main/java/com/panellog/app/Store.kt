@@ -413,9 +413,12 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
     }
 
     /** Заметки по ошибкам панели для передачи другому технику. */
-    fun notesJson(panelId: String): JSONArray {
+    /** panelId = "" и siteId — записи объекта без привязки к панели. */
+    fun notesJson(panelId: String, siteId: String? = null): JSONArray {
         val a = JSONArray()
-        for (f in query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }) {
+        val rows = if (siteId != null) query("SELECT $FCOLS FROM faults WHERE site_id=? AND panel_id=?", arrayOf(siteId, panelId)) { faultFrom(it) }
+            else query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }
+        for (f in rows) {
             if (!f.isManual && f.comment.isBlank() && f.action.isEmpty() && !f.billable && !f.parked && !f.repaired) continue
             if (f.hidden) continue
             a.put(JSONObject().put("key", f.key).put("comment", f.comment).put("action", f.action)
@@ -426,14 +429,15 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
     }
 
     /** Добавить заметки другого техника к своим: ничего не стирается; разные комментарии склеиваются с именем. */
-    fun mergeNotes(panelId: String, notes: JSONArray, who: String): Int {
-        val mine = query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }.associateBy { it.key }
+    fun mergeNotes(panelId: String, notes: JSONArray, who: String, siteIdIn: String? = null): Int {
+        val mine = (if (siteIdIn != null) query("SELECT $FCOLS FROM faults WHERE site_id=? AND panel_id=?", arrayOf(siteIdIn, panelId)) { faultFrom(it) }
+            else query("SELECT $FCOLS FROM faults WHERE panel_id=?", arrayOf(panelId)) { faultFrom(it) }).associateBy { it.key }
         var changed = 0
         for (i in 0 until notes.length()) {
             val n = notes.optJSONObject(i) ?: continue
             var f = mine[n.optString("key")]
             if (f == null && n.optBoolean("manual")) {   // ручная запись другого техника — создать у себя
-                val sid = panel(panelId)?.siteId ?: continue
+                val sid = siteIdIn ?: panel(panelId)?.siteId ?: continue
                 val id = addManual(sid, panelId, n.optString("address"), n.optString("problem"), n.optString("place"), false,
                     n.optString("key"), n.optLong("ts").takeIf { it > 0 } ?: now())
                 f = fault(id); changed++
@@ -513,6 +517,18 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
             val t0 = if (inRange.isEmpty()) manual.minOf { it.firstSeen } else inRange.first().ts
             val t1 = if (inRange.isEmpty()) manual.maxOf { it.lastSeen } else inRange.last().ts
             sections.add(PanelSection(p, t0, t1, inRange.size, billable, fixed, added, remaining))
+        }
+        // записи техника без привязки к רכזת — отдельным разделом в конце
+        if (onlyPanel == null) {
+            val loose = byId.values.filter { it.isManual && it.panelId.isEmpty() }
+            if (loose.isNotEmpty()) {
+                val pseudo = Panel("", siteId, "✍ רישומי טכנאי", "", 0)
+                val open = loose.filter { it.active && !it.repaired }
+                val fixed = loose.filter { it.active && it.repaired }
+                sections.add(PanelSection(pseudo, loose.minOf { it.firstSeen }, loose.maxOf { it.lastSeen }, 0,
+                    list(open.filter { it.billable }.map { it.id }), list(fixed.map { it.id }), emptyList(),
+                    list(open.filter { !it.billable }.map { it.id })))
+            }
         }
         if (sections.isEmpty()) return null
         return PeriodReport(site, sections.minOf { it.from }, sections.maxOf { it.to }, sections)

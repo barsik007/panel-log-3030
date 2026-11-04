@@ -376,7 +376,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         for (p in panels) chips.addView(chip(p.name + " · " + p.activeCount, panelSel == p.id || panels.size == 1,
             { panelSel = p.id; render() }, { panelMenu(p) }), chipLp())
         chips.addView(chip(I18n.t("newPanel"), false, { panelDialog(null) }), chipLp())
-        chips.addView(chip(I18n.t("newEntry"), false, { choosePanelThen { capturePanelId?.let { entryDialog(null, it) } } }), chipLp())
         box.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) })
 
         // 2×2: снять лог · как есть / отчёт · логи для Claude
@@ -390,9 +389,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         ))
 
         val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
-        val faults = store.faults(s.id).filter { panelSel == null || it.panelId == panelSel }
+        val faults = store.faults(s.id).filter { panelSel == null || it.panelId == panelSel || it.panelId.isEmpty() }
         if (logs.isEmpty() && faults.isEmpty()) {
             box.addView(tv(I18n.t("noLogsYet"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(14), 0, 0) })
+            box.addView(entryButton())
             return sv
         }
         // сводка
@@ -461,7 +461,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val lastTsBy = panels.associate { p -> p.id to (logs.firstOrNull { it.panelId == p.id }?.ts ?: 0L) }
         val countBy = panels.associate { p -> p.id to logs.count { it.panelId == p.id } }
         val q = searchText.trim().lowercase()
-        val faults = store.faults(sid).filter { panelSel == null || it.panelId == panelSel }.filter {
+        val faults = store.faults(sid).filter { panelSel == null || it.panelId == panelSel || it.panelId.isEmpty() }.filter {
             when (tab) { 0 -> it.active; 1 -> !it.active; else -> true }
         }.filter {
             q.isEmpty() || listOf(it.address, it.zone, it.label, it.label2, it.problem, it.node, it.devType,
@@ -473,12 +473,19 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         } }
         if (faults.isEmpty()) {
             list.addView(tv(I18n.t("noFaults"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
+            list.addView(entryButton())
             return
         }
         if (!I18n.he) AutoTr.request(faults.flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val showPanel = panelSel == null && panels.size > 1
         for (f in faults) list.addView(faultRow(f, lastTsBy[f.panelId] ?: 0L, countBy[f.panelId] ?: 0,
             if (showPanel) pName[f.panelId] ?: "" else ""))
+        list.addView(entryButton())
+    }
+
+    /** В конце списка: ручная запись по объекту (без привязки к רכזת). */
+    private fun entryButton(): View = btn(I18n.t("newEntryLong")) { entryDialog(null, "") }.apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(12); bottomMargin = dp(24) }
     }
 
     private fun faultRow(f: Fault, lastTs: Long, logCount: Int, panelTag: String): View {
@@ -1046,6 +1053,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                     arr.put(o)
                 }
                 j.put("logs", arr)
+                if (withNotes) j.put("siteNotes", store.notesJson("", sid))   // записи техника без רכזת
                 val safe = { x: String -> x.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(30) }
                 val dir = File(store.dataDir(), "share").also { it.mkdirs() }
                 val one = if (logs.size == 1) "_" + safe(store.panel(logs[0].panelId)?.name ?: "") else ""
@@ -1066,7 +1074,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     private data class G1h(val site: String, val address: String, val panel: String, val detected: String,
                            val ts: Long, val events: Int, val raw: ByteArray,
-                           val who: String, val notes: org.json.JSONArray?)
+                           val who: String, val notes: org.json.JSONArray?, val siteNotes: org.json.JSONArray? = null)
 
     /** Файл .g1h открыт из WhatsApp/почты/проводника или прислан через «Поделиться». */
     private fun handleFileIntent(i: Intent) {
@@ -1095,7 +1103,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 val arr = j.optJSONArray("logs")
                 val pack = if (arr != null) (0 until arr.length()).mapNotNull { k -> arr.optJSONObject(k)?.let { item(it) } }
                     else if (j.has("raw")) listOf(item(j)) else emptyList()   // формат v1: один лог
-                if (pack.isNotEmpty()) packs.add(pack)
+                val sn = j.optJSONArray("siteNotes")
+                if (pack.isNotEmpty()) packs.add(if (sn != null && sn.length() > 0) listOf(pack[0].copy(siteNotes = sn)) + pack.drop(1) else pack)
             } catch (_: Exception) { }
         }
         if (packs.isEmpty()) { toast(I18n.t("notG1")); return }
@@ -1135,6 +1144,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     /** Панели файла по очереди; в конце — одно общее окно с итогом. */
     private fun importItems(sid: String, pack: List<G1h>, k: Int, sum: StringBuilder, pids: ArrayList<String>, next: () -> Unit) {
         if (k >= pack.size) {
+            pack[0].siteNotes?.let { sn ->
+                val n = store.mergeNotes("", sn, pack[0].who, sid)
+                if (n > 0) sum.append(I18n.t("manualEntry")).append(": ").append(I18n.f("notesMerged", n)).append('\n')
+            }
             siteId = sid; prefs().edit().putString("lastSiteId", sid).apply()
             panelSel = if (pids.distinct().size == 1) pids[0] else null
             tab = 0; searchText = ""
