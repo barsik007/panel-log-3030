@@ -193,7 +193,7 @@ object PeriodExport {
     /** Главное — что осталось (с причинами); затем коротко — что устранено. */
     private fun openOf(r: PanelSection): List<Fault> =
         (r.billable.filter { it.active && !it.repaired } + r.added + r.remaining)
-            .sortedWith(compareBy<Fault>({ !it.billable }, { it.isSystem }, { it.address }))
+            .sortedWith(compareBy<Fault>({ it.isSystem }, { it.address }))
     private fun fixedOf(r: PanelSection): List<Fault> =
         (r.fixed + r.billable.filter { !it.active || it.repaired }).sortedWith(compareBy<Fault>({ it.isSystem }, { it.address }))
 
@@ -206,7 +206,6 @@ object PeriodExport {
     private fun tags(f: Fault, r: PanelSection, heOnly: Boolean): String {
         val t = ArrayList<String>()
         if (f.repaired) t.add(if (heOnly) "🔧 תוקן ע״י הטכנאי" else "🔧 תוקן ע״י הטכנאי (починено техником)")
-        if (f.billable) t.add(if (heOnly) "₪ לתשלום" else "₪ לתשלום (к оплате)")
         if (f.parked) t.add(if (heOnly) "⏸ ממתין לאישור" else "⏸ ממתין לאישור (на утверждении)")
         if (r.added.any { it.id == f.id }) t.add(if (heOnly) "🆕 חדש" else "🆕 חדש (новая)")
         if (f.recur > 0) t.add("🔁 ×" + f.recur)
@@ -215,13 +214,12 @@ object PeriodExport {
 
     private fun countsLine(r: PeriodReport, heOnly: Boolean, work: Boolean = false): String {
         val open = r.panels.sumOf { openOf(it).size }
-        val bill = r.panels.sumOf { p -> openOf(p).count { it.billable } }
         val fixed = r.panels.sumOf { fixedOf(it).size }
         val byTech = r.panels.sumOf { p -> fixedOf(p).count { it.repaired } }
         if (work) return if (heOnly) "תוקנו: $fixed (מהן סומנו ע״י הטכנאי: $byTech) · נשארו פתוחות: $open"
             else "Устранено: $fixed (из них отмечено техником: $byTech) · осталось: $open"
-        return if (heOnly) "תקלות פעילות: $open (לתשלום $bill)"
-            else "Активных неисправностей: $open (к оплате $bill)"
+        return if (heOnly) "תקלות פעילות: $open"
+            else "Активных неисправностей: $open"
     }
 
     private fun problem(f: Fault, heOnly: Boolean): String {

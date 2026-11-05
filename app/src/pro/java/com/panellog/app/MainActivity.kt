@@ -549,7 +549,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (f.active && f.repaired) b.add(I18n.f("stRepaired", fmtD(f.fixedTs)))
         if (f.hidden) b.add(I18n.t("stHidden"))
         if (f.parked) b.add(I18n.t("stParked"))
-        if (f.billable) b.add(I18n.t("stBill"))
         if (f.action.isNotEmpty()) b.add("✔ " + store.actionText(f.action))
         return b.joinToString("  ")
     }
@@ -560,13 +559,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val what = input(I18n.t("entryWhat"), edit?.problem ?: "", true)
         val place = input(I18n.t("entryPlace"), edit?.label ?: "")
         val addr = input(I18n.t("entryAddr"), edit?.address ?: "").apply { setSingleLine() }
-        val bill = CheckBox(this).apply { text = "₪ " + I18n.t("billable"); isChecked = edit?.billable ?: false }
-        val box = dialogBox().apply { addView(what); addView(place); addView(addr); if (edit == null) addView(bill) }
+        val box = dialogBox().apply { addView(what); addView(place); addView(addr) }
         fun save(photo: Boolean) {
             val w = what.text.toString().trim()
             if (w.isEmpty()) { toast(I18n.t("entryEmpty")); return }
             val pl = place.text.toString().trim(); val ad = addr.text.toString().trim().uppercase()
-            val id = if (edit == null) store.addManual(sid, panelId, ad, w, pl, bill.isChecked)
+            val id = if (edit == null) store.addManual(sid, panelId, ad, w, pl, false)
                 else { store.updateManual(edit.id, ad, w, pl); edit.id }
             faultId = id; tab = 0; go(Scr.FAULT)   // карточка: фото, комментарий
             if (photo) takePhoto(id)
@@ -602,7 +600,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     }
 
     private fun selActions() {
-        val keys = listOf("selComment", "selPark", "selUnpark", "selRepair", "selBill", "hideFault", "unhideFault", "selAll", "selNone")
+        val keys = listOf("selComment", "selPark", "selUnpark", "selRepair", "hideFault", "unhideFault", "selAll", "selNone")
         AlertDialog.Builder(this).setTitle(I18n.f("selectedN", selected.size))
             .setItems(keys.map { I18n.t(it) }.toTypedArray()) { _, w ->
                 val key = keys[w]
@@ -617,7 +615,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                         "selPark" -> if (!f.parked) { store.setParked(id, true); n++ }
                         "selUnpark" -> if (f.parked) { store.setParked(id, false); n++ }
                         "selRepair" -> if (f.active && !f.repaired) { store.setRepaired(id, true); n++ }
-                        "selBill" -> if (!f.billable) { store.setBillable(id, true); n++ }
                         "hideFault" -> if (!f.hidden) { store.setHidden(id, true); n++ }
                         "unhideFault" -> if (f.hidden) { store.setHidden(id, false); n++ }
                     }
@@ -709,13 +706,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             text = "⏸ " + I18n.t("parked"); textSize = 16f; isChecked = f.parked
             setPadding(0, dp(6), 0, dp(6))
             setOnCheckedChangeListener { _, ch -> store.setParked(f.id, ch) }
-        })
-
-        // К оплате
-        box.addView(CheckBox(this).apply {
-            text = "₪ " + I18n.t("billable"); textSize = 16f; isChecked = f.billable
-            setPadding(0, dp(6), 0, dp(6))
-            setOnCheckedChangeListener { _, ch -> store.setBillable(f.id, ch) }
         })
 
         // Что сделано / комментарий
@@ -1482,7 +1472,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
     private fun actionsEditor() {
         val acts = store.actions().toMutableList()
-        val labels = acts.map { (if (it.billable) "₪ " else "") + it.he + if (it.ru.isNotEmpty()) " / " + it.ru else "" } + I18n.t("addAction")
+        val labels = acts.map { it.he + if (it.ru.isNotEmpty()) " / " + it.ru else "" } + I18n.t("addAction")
         AlertDialog.Builder(this).setTitle(I18n.t("editActions"))
             .setItems(labels.toTypedArray()) { _, w -> editAction(if (w < acts.size) acts[w] else null) }
             .setNegativeButton(I18n.t("close"), null).show()
@@ -1493,7 +1483,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val heIn = input(I18n.t("actionHe"), a?.he ?: "")
         val ruIn = input(I18n.t("actionRu"), a?.ru ?: "")
         val bill = CheckBox(this).apply { text = I18n.t("actionBill"); isChecked = a?.billable ?: false }
-        box.addView(heIn); box.addView(ruIn); box.addView(bill)
+        box.addView(heIn); box.addView(ruIn)   // «₪ к оплате» убрано — достаточно комментариев
         val b = AlertDialog.Builder(this).setTitle(if (a == null) I18n.t("addAction") else a.he).setView(box)
             .setPositiveButton(I18n.t("ok")) { _, _ ->
                 val h = heIn.text.toString().trim()
