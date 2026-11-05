@@ -80,6 +80,11 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private var siteId: String? = null
     private var faultId: String? = null
     private var tab = 0
+    // множественный выбор ошибок (долгое нажатие → «Выбрать несколько»)
+    private var selMode = false
+    private val selected = LinkedHashSet<String>()
+    private var visibleIds: List<String> = emptyList()
+    private var selCountView: TextView? = null
     private var panelSel: String? = null      // выбранная панель на экране объекта (null = все)
     private var capturePanelId: String? = null
     private var searchText = ""
@@ -188,7 +193,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     override fun onBackPressed() {
         when (scr) {
             Scr.HOME -> super.onBackPressed()
-            Scr.SITE -> go(Scr.HOME)
+            Scr.SITE -> if (selMode) { selMode = false; selected.clear(); render() } else go(Scr.HOME)
             Scr.CAPTURE -> leaveCapture()
             Scr.FAULT -> { saveCommentIfAny(); go(Scr.SITE) }
             Scr.LOGS -> go(Scr.SITE)
@@ -213,7 +218,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             Scr.LOGS -> logsView()
             Scr.PAPER -> paperView()
         }
-        setContentView(v)
+        if (scr != Scr.SITE) { selMode = false; selected.clear() }
+        setContentView(if (scr == Scr.SITE && selMode) withSelBar(v) else v)
         window.decorView.layoutDirection = if (I18n.he) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
         invalidateOptionsMenu()
     }
@@ -479,6 +485,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         }
         if (!I18n.he) AutoTr.request(faults.flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val showPanel = panelSel == null && panels.size > 1
+        visibleIds = faults.map { it.id }
         for (f in faults) list.addView(faultRow(f, lastTsBy[f.panelId] ?: 0L, countBy[f.panelId] ?: 0,
             if (showPanel) pName[f.panelId] ?: "" else ""))
         list.addView(entryButton())
@@ -501,8 +508,15 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val badges = statusBadges(f, lastTs, logCount)
         if (badges.isNotEmpty()) c.addView(tv(badges, 13f, color = Color.rgb(30, 63, 138)).apply { setPadding(0, dp(4), 0, 0) })
         warning(f)?.let { c.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
-        c.setOnClickListener { faultId = f.id; go(Scr.FAULT) }
-        c.setOnLongClickListener { faultLongMenu(f); true }
+        if (selMode) {
+            val on = f.id in selected
+            c.addView(tv(if (on) "☑" else "☐", 22f, true, Color.rgb(30, 63, 138)), 0)
+            c.setOnClickListener { toggleSel(f.id) }
+            c.setOnLongClickListener { toggleSel(f.id); true }
+        } else {
+            c.setOnClickListener { faultId = f.id; go(Scr.FAULT) }
+            c.setOnLongClickListener { faultLongMenu(f); true }
+        }
         if (f.parked) c.alpha = 0.4f  // «не актуально» — бледная
         if (f.isManual && !f.hidden && !(f.active && f.repaired))  // запись техника — светло-жёлтая, неброская
             c.background = rounded(Color.rgb(255, 250, 225), 12, Color.rgb(238, 226, 170))
@@ -563,12 +577,62 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             .setNegativeButton(I18n.t("cancel"), null).show()
     }
 
+    private fun toggleSel(id: String) {
+        if (!selected.remove(id)) selected.add(id)
+        selCountView?.text = I18n.f("selectedN", selected.size)
+        fillFaultList()
+    }
+
+    /** Нижняя панель режима выбора: «Выбрано: N» · Действие… · ✕ */
+    private fun withSelBar(content: View): View {
+        val root = android.widget.FrameLayout(this)
+        root.addView(content, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.rgb(21, 24, 28)); setPadding(dp(12), dp(8), dp(8), dp(8))
+        }
+        val cnt = tv(I18n.f("selectedN", selected.size), 15f, true, Color.WHITE)
+        selCountView = cnt
+        bar.addView(cnt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(btn(I18n.t("selAction"), true) { selActions() })
+        bar.addView(btn("✕") { selMode = false; selected.clear(); render() }, LinearLayout.LayoutParams(dp(56), ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(bar, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        (content as? ScrollView)?.getChildAt(0)?.let { it.setPadding(it.paddingLeft, it.paddingTop, it.paddingRight, dp(90)) }
+        return root
+    }
+
+    private fun selActions() {
+        val keys = listOf("selPark", "selUnpark", "selRepair", "selBill", "hideFault", "unhideFault", "selAll", "selNone")
+        AlertDialog.Builder(this).setTitle(I18n.f("selectedN", selected.size))
+            .setItems(keys.map { I18n.t(it) }.toTypedArray()) { _, w ->
+                val key = keys[w]
+                if (key == "selAll") { selected.addAll(visibleIds); selCountView?.text = I18n.f("selectedN", selected.size); fillFaultList(); return@setItems }
+                if (key == "selNone") { selected.clear(); selCountView?.text = I18n.f("selectedN", 0); fillFaultList(); return@setItems }
+                if (selected.isEmpty()) { toast(I18n.t("selEmpty")); return@setItems }
+                var n = 0
+                for (id in selected) {
+                    val f = store.fault(id) ?: continue
+                    when (key) {
+                        "selPark" -> if (!f.parked) { store.setParked(id, true); n++ }
+                        "selUnpark" -> if (f.parked) { store.setParked(id, false); n++ }
+                        "selRepair" -> if (f.active && !f.repaired) { store.setRepaired(id, true); n++ }
+                        "selBill" -> if (!f.billable) { store.setBillable(id, true); n++ }
+                        "hideFault" -> if (!f.hidden) { store.setHidden(id, true); n++ }
+                        "unhideFault" -> if (f.hidden) { store.setHidden(id, false); n++ }
+                    }
+                }
+                selMode = false; selected.clear(); render()
+                toast(I18n.f("selDone", n))
+            }.show()
+    }
+
     /** Долгое нажатие на ошибку: убрать из отчёта / вернуть / удалить совсем. */
     private fun faultLongMenu(f: Fault) {
         val title = (if (f.isManual) I18n.t("manualEntry") else if (f.isSystem) I18n.t("system") else f.address) + " · " +
             (if (f.isManual) f.problem else I18n.panel(f.problem))
         AlertDialog.Builder(this).setTitle(title)
-            .setItems(arrayOf(I18n.t(if (f.hidden) "unhideFault" else "hideFault"), I18n.t("deleteFault"))) { _, w ->
+            .setItems(arrayOf(I18n.t(if (f.hidden) "unhideFault" else "hideFault"), I18n.t("deleteFault"), I18n.t("selectMany"))) { _, w ->
+                if (w == 2) { selMode = true; selected.clear(); selected.add(f.id); render(); return@setItems }
                 if (w == 0) { store.setHidden(f.id, !f.hidden); fillFaultList() }
                 else AlertDialog.Builder(this).setMessage(I18n.t("deleteFaultQ"))
                     .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteFault(f.id); render() }
