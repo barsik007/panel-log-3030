@@ -602,13 +602,14 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     }
 
     private fun selActions() {
-        val keys = listOf("selPark", "selUnpark", "selRepair", "selBill", "hideFault", "unhideFault", "selAll", "selNone")
+        val keys = listOf("selComment", "selPark", "selUnpark", "selRepair", "selBill", "hideFault", "unhideFault", "selAll", "selNone")
         AlertDialog.Builder(this).setTitle(I18n.f("selectedN", selected.size))
             .setItems(keys.map { I18n.t(it) }.toTypedArray()) { _, w ->
                 val key = keys[w]
                 if (key == "selAll") { selected.addAll(visibleIds); selCountView?.text = I18n.f("selectedN", selected.size); fillFaultList(); return@setItems }
                 if (key == "selNone") { selected.clear(); selCountView?.text = I18n.f("selectedN", 0); fillFaultList(); return@setItems }
                 if (selected.isEmpty()) { toast(I18n.t("selEmpty")); return@setItems }
+                if (key == "selComment") { selCommentDialog(); return@setItems }
                 var n = 0
                 for (id in selected) {
                     val f = store.fault(id) ?: continue
@@ -624,6 +625,28 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 selMode = false; selected.clear(); render()
                 toast(I18n.f("selDone", n))
             }.show()
+    }
+
+    /** Один комментарий сразу на все выбранные (например, обрыв линии — 10 датчиков подряд).
+     *  Пустой комментарий заменяется, существующий — дополняется новой строкой (ничего не стирается). */
+    private fun selCommentDialog() {
+        val e = input(I18n.t("selCommentHint"), "", true)
+        AlertDialog.Builder(this).setTitle(I18n.f("selCommentTitle", selected.size))
+            .setView(dialogBox().apply { addView(e) })
+            .setPositiveButton(I18n.t("save")) { _, _ ->
+                val t = e.text.toString().trim()
+                if (t.isEmpty()) return@setPositiveButton
+                var n = 0
+                for (id in selected) {
+                    val f = store.fault(id) ?: continue
+                    val old = f.comment.trim()
+                    if (old.contains(t)) continue
+                    store.setComment(id, if (old.isEmpty()) t else old + "\n" + t); n++
+                }
+                selMode = false; selected.clear(); render()
+                toast(I18n.f("selDone", n))
+            }
+            .setNegativeButton(I18n.t("cancel"), null).show()
     }
 
     /** Долгое нажатие на ошибку: убрать из отчёта / вернуть / удалить совсем. */
