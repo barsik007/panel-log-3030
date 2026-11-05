@@ -503,8 +503,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             else if (f.isSystem) I18n.t("system") + (if (f.node.isNotEmpty()) " · " + f.node else "")
             else f.address + (if (f.devType.isNotEmpty()) " · " + I18n.devType(f.devType) else ""))
         c.addView(tv(head, 15f, true))
-        c.addView(tv(if (f.isManual) f.problem else I18n.panel(f.problem), 14f))
+        c.addView(tv(if (f.isManual) f.problem else I18n.panel(f.problem), 14f, true))   // суть ошибки — жирным
         addPlace(c, if (f.isSystem) listOf() else listOf(f.label, f.label2), 15f)
+        // комментарий техника — светло-красным прямо в списке
+        if (f.comment.isNotBlank()) c.addView(tv("💬 " + f.comment.trim(), 14f, color = Color.rgb(205, 70, 70)).apply {
+            maxLines = 4; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(0, dp(4), 0, 0)
+        })
         val badges = statusBadges(f, lastTs, logCount)
         if (badges.isNotEmpty()) c.addView(tv(badges, 13f, color = Color.rgb(30, 63, 138)).apply { setPadding(0, dp(4), 0, 0) })
         warning(f)?.let { c.addView(tv(it, 13f, color = Color.rgb(160, 30, 30))) }
