@@ -67,6 +67,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         private const val MAX_CAPTURE_BYTES = 8 * 1024 * 1024
         private const val MENU_SETTINGS = 1
         private const val REQ_PHOTO = 7
+        private const val REQ_GALLERY = 8
         private val BAUDS = intArrayOf(300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200)
     }
 
@@ -727,6 +728,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         box.addView(tv(I18n.t("photos"), 15f, true).apply { setPadding(0, dp(12), 0, dp(4)) })
         val strip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         strip.addView(btn(I18n.t("addPhoto")) { takePhoto(f.id) }, LinearLayout.LayoutParams(dp(96), dp(96)))
+        strip.addView(btn(I18n.t("fromGallery")) { pickFromGallery(f.id) }, LinearLayout.LayoutParams(dp(96), dp(96)).apply { marginStart = dp(6) })
         for (p in store.photos(f.id)) {
             val iv = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
@@ -771,9 +773,42 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         try { startActivityForResult(i, REQ_PHOTO) } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
     }
 
+    /** Фото из галереи (можно несколько сразу) — копируются в программу. */
+    private fun pickFromGallery(fid: String) {
+        saveCommentIfAny()
+        prefs().edit().putString("pendingFault", fid).apply()
+        val i = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "image/*"; addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        try { startActivityForResult(Intent.createChooser(i, I18n.t("fromGallery")), REQ_GALLERY) }
+        catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
+    }
+
+    private fun importGallery(data: Intent?) {
+        val fid = prefs().getString("pendingFault", null) ?: return
+        prefs().edit().remove("pendingFault").apply()
+        val uris = ArrayList<Uri>()
+        data?.clipData?.let { c -> for (k in 0 until c.itemCount) uris.add(c.getItemAt(k).uri) }
+        if (uris.isEmpty()) data?.data?.let { uris.add(it) }
+        var n = 0
+        for (u in uris) {
+            try {
+                val file = store.newPhotoFile()
+                contentResolver.openInputStream(u)?.use { inp -> file.outputStream().use { inp.copyTo(it) } }
+                if (file.length() > 0) { store.addPhoto(fid, file); n++ } else file.delete()
+            } catch (_: Exception) { }
+        }
+        val f = store.fault(fid)
+        if (f != null) { siteId = f.siteId; faultId = fid; scr = Scr.FAULT }
+        render()
+        if (n > 0) toast(I18n.f("photosAdded", n))
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_GALLERY) { if (resultCode == RESULT_OK) importGallery(data); return }
         if (requestCode != REQ_PHOTO) return
         val path = prefs().getString("pendingPhoto", null) ?: return
         val fid = prefs().getString("pendingFault", null) ?: return
