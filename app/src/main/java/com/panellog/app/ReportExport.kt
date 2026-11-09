@@ -324,7 +324,7 @@ object PeriodExport {
         return sb.toString().trimEnd()
     }
 
-    fun pdf(r: PeriodReport, store: Store, heOnly: Boolean, out: File, work: Boolean = false) {
+    fun pdf(r: PeriodReport, store: Store, heOnly: Boolean, out: File, work: Boolean = false, photos: Boolean = false) {
         val pageW = 595; val pageH = 842; val margin = 30
         val doc = PdfDocument()
         val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 15f; typeface = Typeface.DEFAULT_BOLD; color = Color.BLACK }
@@ -428,7 +428,7 @@ object PeriodExport {
                     if (f.address.isEmpty()) "—" else f.address + (if (f.zone.isNotEmpty()) "\n" + f.zone else ""),
                     type(f, heOnly),
                     problem(f, heOnly) + tags(f, ps, heOnly).let { if (it.isEmpty()) "" else "\n$it" } +
-                        (if (store.photos(f.id).isEmpty()) "" else {
+                        (if (!photos || store.photos(f.id).isEmpty()) "" else {
                             val k = photoNo.getOrPut(f.id) { (photoRefs.size + 1).also { photoRefs.add(Triple(it, f, ps.panel.name)) } }
                             if (heOnly) "\n[תמונה #$k]" else "\n[תמונה / фото #$k]"
                         }),

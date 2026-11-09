@@ -1492,8 +1492,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (!I18n.he) AutoTr.request(store.faults(sid).flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val r = store.period(sid, panelId, fromFor) ?: run { toast(I18n.t("noLogsForReport")); return }
         // Иврит в настройках — только иврит; русский — выбор: иврит или иврит + перевод
-        val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
-            else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
+        val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "pdfPhHe" to true, "saveHe" to true)
+            else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "pdfPhHe" to true, "pdfPhRu" to false, "saveHe" to true, "saveRu" to false)
         // + «Проделанная работа» — для себя (устранённое), начальнику не отправляется
         val workItems = listOf(I18n.t("workSave"), I18n.t("workShare"))
         val labels = opts.map { I18n.t(it.first) } + workItems + (if (withOther) listOf(I18n.t("otherPeriod")) else emptyList())
@@ -1504,7 +1504,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                     val heW = I18n.he
                     try {
                         val out = File(store.dataDir(), reportName(r, heW).replace(".pdf", "_work.pdf"))
-                        PeriodExport.pdf(r, store, heW, out, work = true)
+                        PeriodExport.pdf(r, store, heW, out, work = true, photos = true)
                         if (w == opts.size) saveToDownloads(out, out.name, "application/pdf") else shareFile(out, "application/pdf")
                     } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
                     return@setItems
@@ -1513,6 +1513,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 val (key, heOnly) = opts[w]
                 when {
                     key.startsWith("wa") -> shareWhatsapp(PeriodExport.whatsapp(r, store, heOnly))
+                    key.startsWith("pdfPh") -> makeReportPdf(r, heOnly, photos = true)?.let { shareFile(it, "application/pdf") }
                     key.startsWith("pdf") -> makeReportPdf(r, heOnly)?.let { shareFile(it, "application/pdf") }
                     else -> makeReportPdf(r, heOnly)?.let { saveToDownloads(it, it.name, "application/pdf") }
                 }
@@ -1525,9 +1526,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         return "G1_${site}_$d" + (if (heOnly) "_he" else "_he_ru") + ".pdf"
     }
 
-    private fun makeReportPdf(r: PeriodReport, heOnly: Boolean): File? = try {
-        val out = File(store.dataDir(), reportName(r, heOnly))
-        PeriodExport.pdf(r, store, heOnly, out); out
+    private fun makeReportPdf(r: PeriodReport, heOnly: Boolean, photos: Boolean = false): File? = try {
+        val out = File(store.dataDir(), reportName(r, heOnly).let { if (photos) it.replace(".pdf", "_photos.pdf") else it })
+        PeriodExport.pdf(r, store, heOnly, out, photos = photos); out
     } catch (e: Exception) { toast(I18n.t("fileErr") + e.message); null }
 
     private fun shareWhatsapp(text: String) {
