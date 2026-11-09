@@ -754,7 +754,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val f = store.fault(fid) ?: return
         val site = store.site(f.siteId)?.name ?: ""
         val pn = store.panel(f.panelId)?.name ?: ""
-        val text = PeriodExport.faultMessage(f, site, pn, store, I18n.he)
+        val text = PeriodExport.faultMessage(f, site, pn, store, true)
         val uris = ArrayList(store.photos(f.id).map { FileProvider.getUriForFile(this, "$packageName.files", File(it.path)) })
         val i = when (uris.size) {
             0 -> Intent(Intent.ACTION_SEND).setType("text/plain")
@@ -1151,12 +1151,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val all = try { PanelDecoder.decode(File(r.raw).readBytes()).let { d -> if (d.graphic) PanelDecoder.parse(d.visualLines) else emptyList() } }
             catch (_: Exception) { emptyList() }
         val ev = RecordExport.select(all, if (r.kind == "history") histLimit() else 0)
-        val items = if (I18n.he) listOf("recView", "waHe", "pdfHe", "saveHe", "logFile", "deleteLog")
-            else listOf("recView", "waHe", "waRu", "pdfHe", "pdfRu", "saveHe", "saveRu", "logFile", "deleteLog")
+        // отчёты и отправки — только на иврите
+        val items = listOf("recView", "waHe", "pdfHe", "saveHe", "logFile", "deleteLog")
         AlertDialog.Builder(this).setTitle(RecordExport.title(r.kind, I18n.he) + " · " + fmt(r.ts))
             .setItems(items.map { I18n.t(it) }.toTypedArray()) { _, w ->
                 val key = items[w]
-                val he = I18n.he || key.endsWith("He")
+                val he = true
                 when {
                     key == "recView" -> {
                         paperText = RecordExport.text(ev, r.kind, s.name, pn, I18n.he, all.size).replace("*", "")
@@ -1417,8 +1417,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         }
         if (parts.isEmpty()) { toast(I18n.t("noLogsForReport")); return }
         val title = { p: Panel -> s.name + (if (store.panels(sid).size > 1) " · " + p.name else "") }
-        val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)
-            else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "saveHe" to true, "saveRu" to false)
+        val opts = listOf("waHe" to true, "pdfHe" to true, "saveHe" to true)   // только иврит
         AlertDialog.Builder(this).setTitle(I18n.t("sendAsIs"))
             .setItems((opts.map { I18n.t(it.first) } + I18n.t("shareTech")).toTypedArray()) { _, w ->
                 if (w >= opts.size) { shareTechMenu(lastLogs); return@setItems }
@@ -1492,8 +1491,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (!I18n.he) AutoTr.request(store.faults(sid).flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val r = store.period(sid, panelId, fromFor) ?: run { toast(I18n.t("noLogsForReport")); return }
         // Иврит в настройках — только иврит; русский — выбор: иврит или иврит + перевод
-        val opts = if (I18n.he) listOf("waHe" to true, "pdfHe" to true, "pdfPhHe" to true, "saveHe" to true)
-            else listOf("waHe" to true, "waRu" to false, "pdfHe" to true, "pdfRu" to false, "pdfPhHe" to true, "pdfPhRu" to false, "saveHe" to true, "saveRu" to false)
+        val opts = listOf("waHe" to true, "pdfHe" to true, "pdfPhHe" to true, "saveHe" to true)   // только иврит
         // + «Проделанная работа» — для себя (устранённое), начальнику не отправляется
         val workItems = listOf(I18n.t("workSave"), I18n.t("workShare"))
         val labels = opts.map { I18n.t(it.first) } + workItems + (if (withOther) listOf(I18n.t("otherPeriod")) else emptyList())
@@ -1501,7 +1499,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 (if (fmtD(r.from) != fmtD(r.to)) "–" + fmtD(r.to) else ""))
             .setItems(labels.toTypedArray()) { _, w ->
                 if (w == opts.size || w == opts.size + 1) {
-                    val heW = I18n.he
+                    val heW = true
                     try {
                         val out = File(store.dataDir(), reportName(r, heW).replace(".pdf", "_work.pdf"))
                         PeriodExport.pdf(r, store, heW, out, work = true, photos = true)

@@ -95,9 +95,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         "noEvents" to ("Нет разобранных событий — сначала снимите лог с панели" to "אין אירועים — קודם קרא נתונים מהרכזת"),
         "sendTitle" to ("Отправить" to "שליחה"),
         "saveTitle" to ("Сохранить на телефон" to "שמירה בטלפון"),
-        "waHe" to ("WhatsApp — иврит" to "וואטסאפ — עברית"),
+        "waHe" to ("WhatsApp" to "וואטסאפ"),
         "waRu" to ("WhatsApp — иврит + русский" to "וואטסאפ — עברית + רוסית"),
-        "pdfHe" to ("PDF — иврит" to "PDF — עברית"),
+        "pdfHe" to ("PDF" to "PDF"),
         "pdfRu" to ("PDF — иврит + русский" to "PDF — עברית + רוסית"),
         "logFile" to ("Файл лога (для Claude)" to "קובץ יומן (ל-Claude)"),
         "sendList" to ("Отправить список" to "שלח רשימה"),
@@ -681,16 +681,14 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     // ------------------------------------------------------- Отправить
 
     private fun shareMenu() {
-        val items = arrayOf(t("waHe"), t("waRu"), t("pdfHe"), t("pdfRu"), t("logFile"))
+        val items = arrayOf(t("waHe"), t("pdfHe"), t("logFile"))   // только иврит
         AlertDialog.Builder(this)
             .setTitle(t("sendTitle") + siteForReport().let { if (it.isNotEmpty()) " · $it" else "" })
             .setItems(items) { _, which ->
                 rememberSite(rawFile)
                 when (which) {
                     0 -> shareWhatsapp(true)
-                    1 -> shareWhatsapp(false)
-                    2 -> sharePdf(true)
-                    3 -> sharePdf(false)
+                    1 -> sharePdf(true)
                     else -> shareLogs()
                 }
             }
@@ -800,14 +798,13 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     // ------------------------------------------------------- Скачать на телефон
 
     private fun saveMenu() {
-        val items = arrayOf(t("pdfHe"), t("pdfRu"), t("logFile"))
+        val items = arrayOf(t("pdfHe"), t("logFile"))
         AlertDialog.Builder(this)
             .setTitle(t("saveTitle") + siteForReport().let { if (it.isNotEmpty()) " · $it" else "" })
             .setItems(items) { _, which ->
                 rememberSite(rawFile)
                 when (which) {
                     0 -> makePdf(true)?.let { saveToDownloads(it, baseName() + "_he.pdf", "application/pdf") }
-                    1 -> makePdf(false)?.let { saveToDownloads(it, baseName() + "_he_ru.pdf", "application/pdf") }
                     else -> {
                         val raw = latestRawFile()
                         if (raw == null) toastShort(t("emptyLog"))
