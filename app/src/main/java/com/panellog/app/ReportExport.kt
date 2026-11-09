@@ -21,9 +21,12 @@ object ReportExport {
         events.filter { it.node.isNotEmpty() }.groupingBy { it.node }.eachCount()
             .maxByOrNull { it.value }?.key ?: ""
 
-    private fun reportDate(events: List<PanelDecoder.PanelEvent>): String =
-        events.maxByOrNull { it.date + it.time }?.date
-            ?: SimpleDateFormat("dd.MM.yyyy", Locale.US).format(Date())
+    /** Дата отчёта = самое позднее событие (по настоящей дате, а не по строке «ДД.ММ»). */
+    private fun reportDate(events: List<PanelDecoder.PanelEvent>): String {
+        val fmt = SimpleDateFormat("d.M.yyyy H:mm:ss", Locale.US)
+        val latest = events.maxOfOrNull { e -> try { fmt.parse(e.date + " " + e.time)?.time ?: 0L } catch (_: Exception) { 0L } } ?: 0L
+        return SimpleDateFormat("dd.MM.yyyy", Locale.US).format(if (latest > 0) Date(latest) else Date())
+    }
 
     internal fun problemLine(e: PanelDecoder.PanelEvent, he: Boolean): String {
         if (he) return e.problem
