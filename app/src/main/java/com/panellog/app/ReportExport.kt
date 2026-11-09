@@ -25,20 +25,20 @@ object ReportExport {
         events.maxByOrNull { it.date + it.time }?.date
             ?: SimpleDateFormat("dd.MM.yyyy", Locale.US).format(Date())
 
-    private fun problemLine(e: PanelDecoder.PanelEvent, he: Boolean): String {
+    internal fun problemLine(e: PanelDecoder.PanelEvent, he: Boolean): String {
         if (he) return e.problem
         val ru = PanelDecoder.ru(e.problem)
         return if (ru != null) "${e.problem} ($ru)" else e.problem
     }
 
-    private fun typeText(e: PanelDecoder.PanelEvent, he: Boolean): String {
+    internal fun typeText(e: PanelDecoder.PanelEvent, he: Boolean): String {
         if (e.devType.isEmpty()) return ""
         val h = PanelDecoder.typeHe(e.devType)
         val r = PanelDecoder.typeRu(e.devType)
         return if (he || r == null) h else "$h ($r)"
     }
 
-    private fun place(e: PanelDecoder.PanelEvent): String =
+    internal fun place(e: PanelDecoder.PanelEvent): String =
         listOf(e.label, e.label2).filter { it.isNotEmpty() }.joinToString(" · ")
 
     /** Текст для WhatsApp: *жирный* заголовок, устройства по адресам, системные отдельно. */
@@ -408,6 +408,89 @@ object PeriodExport {
         drawLayout(sign, margin.toFloat())
         page?.let { doc.finishPage(it) }
         FileOutputStream(out).use { doc.writeTo(it) }
+        doc.close()
+    }
+}
+
+
+/** Тревоги и история: список событий (новые сверху), без сравнения и комментариев. */
+object RecordExport {
+    fun title(kind: String, he: Boolean) = when (kind) {
+        "alarms" -> if (he) "אזעקות" else "Пожарные тревоги · אזעקות"
+        else -> if (he) "היסטוריה" else "История · היסטוריה"
+    }
+
+    private fun stamp(e: PanelDecoder.PanelEvent): Long = try {
+        java.text.SimpleDateFormat("d.M.yyyy H:mm:ss", java.util.Locale.US).parse(e.date + " " + e.time)?.time ?: 0L
+    } catch (_: Exception) { 0L }
+
+    /** Новые сверху; limit > 0 — только последние N. */
+    fun select(events: List<PanelDecoder.PanelEvent>, limit: Int): List<PanelDecoder.PanelEvent> {
+        val sorted = events.sortedByDescending { stamp(it) }
+        return if (limit > 0) sorted.take(limit) else sorted
+    }
+
+    fun block(e: PanelDecoder.PanelEvent, he: Boolean): String {
+        val sb = StringBuilder()
+        sb.append(e.date).append(' ').append(e.time)
+        val ev = e.event.trim()
+        if (ev.isNotEmpty()) sb.append(" — ").append(if (he) ev else I18n.panel(ev))
+        sb.append('\n')
+        if (e.address.isNotEmpty()) {
+            sb.append(e.address)
+            val t = ReportExport.typeText(e, he)
+            if (t.isNotEmpty()) sb.append(" · ").append(t)
+            sb.append(" · ")
+        }
+        sb.append(ReportExport.problemLine(e, he))
+        val p = ReportExport.place(e)
+        if (p.isNotEmpty()) sb.append('\n').append(p)
+        return sb.toString()
+    }
+
+    fun text(events: List<PanelDecoder.PanelEvent>, kind: String, site: String, panel: String, he: Boolean, total: Int): String {
+        val sb = StringBuilder()
+        sb.append("*").append(title(kind, he)).append(" — ").append(site).append(if (panel.isNotEmpty()) " · $panel" else "").append("*\n")
+        sb.append(if (he) "אירועים: " else "Событий: ").append(events.size)
+        if (total > events.size) sb.append(if (he) " (אחרונים מתוך $total)" else " (последние из $total)")
+        sb.append("\n\n")
+        events.forEachIndexed { i, e -> sb.append(i + 1).append(". ").append(block(e, he)).append("\n\n") }
+        return sb.toString().trimEnd()
+    }
+
+    fun pdf(events: List<PanelDecoder.PanelEvent>, kind: String, site: String, panel: String, he: Boolean, total: Int, out: File) {
+        val doc = PdfDocument()
+        val pageW = 595; val pageH = 842; val margin = 36
+        val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 15f; typeface = Typeface.DEFAULT_BOLD; color = Color.BLACK }
+        val metaPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10f; color = Color.DKGRAY }
+        val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10.5f; color = Color.BLACK }
+        val align = if (he) Layout.Alignment.ALIGN_OPPOSITE else Layout.Alignment.ALIGN_NORMAL
+        val w = pageW - 2 * margin
+        fun layout(t: String, p: TextPaint): StaticLayout =
+            StaticLayout.Builder.obtain(t, 0, t.length, p, w).setAlignment(align).build()
+        var page: PdfDocument.Page? = null; var y = 0f; var no = 0
+        fun newPage() {
+            page?.let { doc.finishPage(it) }
+            no++; page = doc.startPage(PdfDocument.PageInfo.Builder(pageW, pageH, no).create()); y = margin.toFloat()
+        }
+        fun draw(l: StaticLayout) {
+            if (y + l.height > pageH - margin) newPage()
+            page!!.canvas.save(); page!!.canvas.translate(margin.toFloat(), y); l.draw(page!!.canvas); page!!.canvas.restore()
+            y += l.height
+        }
+        newPage()
+        draw(layout(title(kind, he) + "\n" + site + (if (panel.isNotEmpty()) " · $panel" else ""), titlePaint)); y += 4
+        val meta = (if (he) "אירועים: " else "Событий: ") + events.size +
+            (if (total > events.size) (if (he) " (אחרונים מתוך $total)" else " (последние из $total)") else "") +
+            (if (he) "   חדשים למעלה" else "   новые сверху")
+        draw(layout(meta, metaPaint)); y += 10
+        events.forEachIndexed { i, e ->
+            draw(layout("${i + 1}. " + block(e, he), bodyPaint))
+            if (y + 1 < pageH - margin) { page!!.canvas.drawLine(margin.toFloat(), y + 4, (pageW - margin).toFloat(), y + 4, metaPaint) }
+            y += 9
+        }
+        page?.let { doc.finishPage(it) }
+        out.outputStream().use { doc.writeTo(it) }
         doc.close()
     }
 }

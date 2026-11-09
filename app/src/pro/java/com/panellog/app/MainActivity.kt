@@ -87,6 +87,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private var selCountView: TextView? = null
     private var panelSel: String? = null      // выбранная панель на экране объекта (null = все)
     private var capturePanelId: String? = null
+    /** Что снимаем: "faults" (неисправности, со сравнением) | "alarms" | "history" (отдельно, без сравнения). */
+    private var captureKind = "faults"
     private var searchText = ""
     private var paperText = ""
 
@@ -160,7 +162,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 AlertDialog.Builder(this).setMessage(I18n.f("autoCapQ", last.name))
                     .setPositiveButton(I18n.t("yes")) { _, _ ->
                         siteId = last.id; panelSel = null; tab = 0; searchText = ""
-                        choosePanelThen { startCapture() }
+                        choosePanelThen { chooseKindThen { startCapture() } }
                     }
                     .setNegativeButton(I18n.t("otherSite")) { _, _ -> toast(I18n.t("pickSite")) }
                     .show()
@@ -386,7 +388,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
 
         // 2×2: снять лог · как есть / отчёт · логи для Claude
         box.addView(row(
-            btn(I18n.t("takeLog"), true) { choosePanelThen { startCapture() } },
+            btn(I18n.t("takeLog"), true) { choosePanelThen { chooseKindThen { startCapture() } } },
             btn(I18n.t("sendAsIs")) { asIsMenu() }
         ).apply { setPadding(0, dp(8), 0, 0) })
         box.addView(row(
@@ -852,12 +854,34 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         }
     }
 
+    /** Что печатаем с панели: неисправности / тревоги / история. */
+    private fun chooseKindThen(then: () -> Unit) {
+        val kinds = listOf("faults", "alarms", "history")
+        AlertDialog.Builder(this).setTitle(I18n.t("kindQ"))
+            .setItems(arrayOf(I18n.t("kindFaults"), I18n.t("kindAlarms"), I18n.t("kindHistory"))) { _, w ->
+                captureKind = kinds[w]; then()
+            }.show()
+    }
+
+    private fun histLimit(): Int = prefs().getInt("histLimit", 50)
+
     private fun finishCapture() {
         disconnect()
         val sid = siteId ?: return
         val pid = capturePanelId ?: return
         val bytes = captureBytes.toByteArray()
         if (bytes.isEmpty()) { toast(I18n.t("noData")); return }
+        if (captureKind != "faults") {
+            // тревоги / история — сохраняем отдельно, неисправности не трогаем
+            val r = store.addRecord(sid, pid, captureKind, bytes)
+            captureBytes.reset(); captureKind = "faults"
+            go(Scr.SITE)
+            AlertDialog.Builder(this)
+                .setMessage(I18n.f("recSaved", RecordExport.title(r.kind, I18n.he), r.events))
+                .setPositiveButton(I18n.t("recOpen")) { _, _ -> recordMenu(r) }
+                .setNegativeButton(I18n.t("close"), null).show()
+            return
+        }
         val chosen = store.panel(pid) ?: return
         val detected = store.detectPanelName(bytes)
         val other = if (detected.isEmpty()) null
@@ -1010,6 +1034,19 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         box.addView(tv(I18n.t("logsTitle") + " · " + s.name, 20f, true))
         box.addView(tv(I18n.t("logsClaudeHint"), 13f, color = Color.DKGRAY).apply { setPadding(0, dp(4), 0, dp(4)) })
         val pName = store.panels(s.id).associate { it.id to it.name }
+        // тревоги и история — отдельным списком сверху
+        val recs = store.records(s.id).filter { panelSel == null || it.panelId == panelSel }
+        if (recs.isNotEmpty()) {
+            box.addView(tv(I18n.t("recTitle"), 16f, true).apply { setPadding(0, dp(10), 0, dp(4)) })
+            for (r in recs) {
+                val c = card().apply { background = rounded(Color.rgb(255, 244, 240), 12, Color.rgb(240, 200, 190)) }
+                c.addView(tv(pName[r.panelId] ?: "", 12f, true, Color.rgb(179, 38, 30)))
+                c.addView(tv((if (r.kind == "alarms") "🔥 " else "📜 ") + RecordExport.title(r.kind, I18n.he) + " · " + I18n.f("logLine", fmt(r.ts), r.events), 15f, true))
+                c.setOnClickListener { recordMenu(r) }
+                box.addView(c)
+            }
+            box.addView(tv(I18n.t("faultLogsTitle"), 16f, true).apply { setPadding(0, dp(12), 0, dp(4)) })
+        }
         val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
         if (logs.isEmpty()) box.addView(tv(I18n.t("noLogsYet"), 14f, color = Color.DKGRAY))
         for (l in logs) {
@@ -1051,6 +1088,40 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             setPadding(dp(6), dp(6), dp(6), dp(6)); setTextIsSelectable(true)
         })
         return sv
+    }
+
+    /** Тревоги / история: просмотр, отправка, PDF, файл для Claude, удаление. */
+    private fun recordMenu(r: RecordRec) {
+        val s = store.site(r.siteId) ?: return
+        val pn = store.panel(r.panelId)?.name ?: ""
+        val all = try { PanelDecoder.decode(File(r.raw).readBytes()).let { d -> if (d.graphic) PanelDecoder.parse(d.visualLines) else emptyList() } }
+            catch (_: Exception) { emptyList() }
+        val ev = RecordExport.select(all, if (r.kind == "history") histLimit() else 0)
+        val items = if (I18n.he) listOf("recView", "waHe", "pdfHe", "saveHe", "logFile", "deleteLog")
+            else listOf("recView", "waHe", "waRu", "pdfHe", "pdfRu", "saveHe", "saveRu", "logFile", "deleteLog")
+        AlertDialog.Builder(this).setTitle(RecordExport.title(r.kind, I18n.he) + " · " + fmt(r.ts))
+            .setItems(items.map { I18n.t(it) }.toTypedArray()) { _, w ->
+                val key = items[w]
+                val he = I18n.he || key.endsWith("He")
+                when {
+                    key == "recView" -> {
+                        paperText = RecordExport.text(ev, r.kind, s.name, pn, I18n.he, all.size).replace("*", "")
+                        go(Scr.PAPER)
+                    }
+                    key == "logFile" -> shareLogFile(r.asLog())
+                    key == "deleteLog" -> AlertDialog.Builder(this).setMessage(I18n.t("deleteLog") + "?")
+                        .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteRecord(r); render() }
+                        .setNegativeButton(I18n.t("cancel"), null).show()
+                    key.startsWith("wa") -> shareWhatsapp(RecordExport.text(ev, r.kind, s.name, pn, he, all.size))
+                    else -> try {
+                        val safe = s.name.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(40)
+                        val out = File(store.dataDir(), "G1_${safe}_${r.kind}_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(r.ts)) +
+                            (if (he) "_he" else "_he_ru") + ".pdf")
+                        RecordExport.pdf(ev, r.kind, s.name, pn, he, all.size, out)
+                        if (key.startsWith("pdf")) shareFile(out, "application/pdf") else saveToDownloads(out, out.name, "application/pdf")
+                    } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
+                }
+            }.show()
     }
 
     private fun shareLogFile(l: LogRec) {
@@ -1462,9 +1533,13 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         box.addView(label(I18n.t("techName")))
         val nameE = input(I18n.t("techName"), techName()).apply { setSingleLine() }
         box.addView(nameE)
+        box.addView(label(I18n.t("histLimit")))
+        val histE = input("50", histLimit().toString()).apply { setSingleLine(); inputType = android.text.InputType.TYPE_CLASS_NUMBER }
+        box.addView(histE)
         AlertDialog.Builder(this).setTitle(I18n.t("settings")).setView(box)
             .setPositiveButton(I18n.t("ok")) { _, _ ->
-                prefs().edit().putString("techName", nameE.text.toString().trim()).apply()
+                prefs().edit().putString("techName", nameE.text.toString().trim())
+                    .putInt("histLimit", histE.text.toString().toIntOrNull()?.coerceIn(0, 100000) ?: 50).apply()
                 val heSel = lg.checkedRadioButtonId == he.id
                 prefs().edit().putInt("baud", BAUDS[baudSp.selectedItemPosition.coerceIn(0, BAUDS.size - 1)])
                     .putString("lang", if (heSel) "he" else "ru").apply()

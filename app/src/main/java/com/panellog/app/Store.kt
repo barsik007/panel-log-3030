@@ -22,6 +22,11 @@ data class Panel(
 
 data class LogRec(val id: String, val siteId: String, val ts: Long, val raw: String, val events: Int, val panelId: String)
 
+/** Другие распечатки панели (не неисправности): kind = "alarms" | "history". В сравнение не попадают. */
+data class RecordRec(val id: String, val siteId: String, val panelId: String, val kind: String, val ts: Long, val raw: String, val events: Int) {
+    fun asLog() = LogRec(id, siteId, ts, raw, events, panelId)
+}
+
 data class Fault(
     val id: String, val siteId: String, val key: String,
     val address: String, val zone: String, val devType: String, val problem: String,
@@ -72,12 +77,13 @@ data class PeriodReport(val site: Site, val from: Long, val to: Long, val panels
 }
 
 /** Локальная база: объекты, логи, неисправности, история, фото. ID — UUID (готово к синхронизации). */
-class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) {
+class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 6) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE sites(id TEXT PRIMARY KEY, name TEXT, address TEXT, note TEXT, panel TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE panels(id TEXT PRIMARY KEY, site_id TEXT, name TEXT, detected TEXT, created INTEGER)")
         db.execSQL("CREATE TABLE logs(id TEXT PRIMARY KEY, site_id TEXT, ts INTEGER, raw TEXT, events INTEGER, panel_id TEXT)")
+        db.execSQL(RECORDS_SQL)
         db.execSQL("CREATE TABLE faults(id TEXT PRIMARY KEY, site_id TEXT, fkey TEXT, address TEXT, zone TEXT, dev_type TEXT, problem TEXT, label TEXT, label2 TEXT, node TEXT, first_seen INTEGER, last_seen INTEGER, active INTEGER, resolved_ts INTEGER, recur INTEGER, billable INTEGER, action TEXT, comment TEXT, updated INTEGER, panel_id TEXT, parked INTEGER DEFAULT 0, fixed_ts INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0)")
         db.execSQL("CREATE TABLE log_faults(log_id TEXT, fault_id TEXT)")
         db.execSQL("CREATE TABLE history(id TEXT PRIMARY KEY, fault_id TEXT, ts INTEGER, kind TEXT, text TEXT)")
@@ -112,6 +118,31 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 5) 
         if (oldVersion < 4) db.execSQL("ALTER TABLE faults ADD COLUMN fixed_ts INTEGER DEFAULT 0")
         // v4 → v5: «убрать из отчёта»
         if (oldVersion < 5) db.execSQL("ALTER TABLE faults ADD COLUMN hidden INTEGER DEFAULT 0")
+        // v5 → v6: тревоги и история — отдельно от неисправностей
+        if (oldVersion < 6) db.execSQL(RECORDS_SQL)
+    }
+
+    private val RECORDS_SQL = "CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, site_id TEXT, panel_id TEXT, kind TEXT, ts INTEGER, raw TEXT, events INTEGER)"
+
+    fun addRecord(siteId: String, panelId: String, kind: String, raw: ByteArray): RecordRec {
+        val id = uuid(); val ts = now()
+        val f = File(rawDir(), "rec_${kind}_$id.bin"); f.writeBytes(raw)
+        val d = PanelDecoder.decode(raw)
+        val n = if (d.graphic) PanelDecoder.parse(d.visualLines).size else 0
+        writableDatabase.insert("records", null, ContentValues().apply {
+            put("id", id); put("site_id", siteId); put("panel_id", panelId); put("kind", kind)
+            put("ts", ts); put("raw", f.absolutePath); put("events", n)
+        })
+        return RecordRec(id, siteId, panelId, kind, ts, f.absolutePath, n)
+    }
+
+    fun records(siteId: String): List<RecordRec> = query(
+        "SELECT id,site_id,panel_id,kind,ts,raw,events FROM records WHERE site_id=? ORDER BY ts DESC", arrayOf(siteId)
+    ) { c -> RecordRec(c.getString(0), c.getString(1), c.getString(2) ?: "", c.getString(3), c.getLong(4), c.getString(5), c.getInt(6)) }
+
+    fun deleteRecord(r: RecordRec) {
+        try { File(r.raw).delete() } catch (_: Exception) {}
+        writableDatabase.delete("records", "id=?", arrayOf(r.id))
     }
 
     private fun uuid() = UUID.randomUUID().toString()
