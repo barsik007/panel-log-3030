@@ -183,6 +183,38 @@ object ReportExport {
 
 /** Отчёт за период по объекту: WhatsApp и PDF. heOnly — только иврит, иначе иврит + перевод. */
 object PeriodExport {
+    /** Фото для PDF: уменьшенное, с учётом поворота камеры (EXIF). */
+    private fun loadPhoto(path: String, maxPx: Int): android.graphics.Bitmap? = try {
+        val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(path, o)
+        var sz = 1
+        while (maxOf(o.outWidth, o.outHeight) / (sz * 2) >= maxPx) sz *= 2
+        var b = android.graphics.BitmapFactory.decodeFile(path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sz })
+        val rot = when (android.media.ExifInterface(path).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
+            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (b != null && rot != 0f) b = android.graphics.Bitmap.createBitmap(b, 0, 0, b.width, b.height,
+            android.graphics.Matrix().apply { postRotate(rot) }, true)
+        b
+    } catch (_: Exception) { null }
+
+    /** Полное описание одной ошибки — для отправки в WhatsApp вместе с фото. */
+    fun faultMessage(f: Fault, siteName: String, panelName: String, store: Store, heOnly: Boolean): String {
+        val sb = StringBuilder()
+        sb.append("*").append(siteName).append(if (panelName.isNotEmpty()) " · $panelName" else "").append("*\n")
+        if (f.address.isNotEmpty()) sb.append(f.address).append(" · ")
+        sb.append(type(f, heOnly)).append('\n')
+        sb.append("*").append(problem(f, heOnly)).append("*\n")
+        val pl = place(f, heOnly)
+        if (pl.isNotEmpty()) sb.append("📍 ").append(pl).append('\n')
+        val dn = done(f, store, heOnly)
+        sb.append("💬 ").append(dn.ifEmpty { if (heOnly) "אין הערה" else "אין הערה · нет комментария" })
+        return sb.toString().trimEnd()
+    }
+
 
     private fun d(ts: Long) = SimpleDateFormat("dd.MM.yyyy", Locale.US).format(Date(ts))
     private fun dt(ts: Long) = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(Date(ts))
@@ -373,6 +405,9 @@ object PeriodExport {
 
         val bottom = pageH - margin - 10
         val panelPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 13f; typeface = Typeface.DEFAULT_BOLD; color = Color.rgb(179, 38, 30) }
+        // ошибки с фото: номер ссылки → (ошибка, רכזת)
+        val photoRefs = ArrayList<Triple<Int, Fault, String>>()
+        val photoNo = HashMap<String, Int>()
         for (ps in r.panels) {
         val pTitle = layout(ps.panel.name + (if (ps.panel.detected.isNotEmpty() && ps.panel.detected != ps.panel.name) " · " + ps.panel.detected else "") +
             (if (work) "   (" + periodText2(ps.from, ps.to) + (if (heOnly) ", קריאות: " else ", логов: ") + ps.logsCount + ")" else ""), panelPaint, content, align)
@@ -392,7 +427,11 @@ object PeriodExport {
                     (i + 1).toString(),
                     if (f.address.isEmpty()) "—" else f.address + (if (f.zone.isNotEmpty()) "\n" + f.zone else ""),
                     type(f, heOnly),
-                    problem(f, heOnly) + tags(f, ps, heOnly).let { if (it.isEmpty()) "" else "\n$it" },
+                    problem(f, heOnly) + tags(f, ps, heOnly).let { if (it.isEmpty()) "" else "\n$it" } +
+                        (if (store.photos(f.id).isEmpty()) "" else {
+                            val k = photoNo.getOrPut(f.id) { (photoRefs.size + 1).also { photoRefs.add(Triple(it, f, ps.panel.name)) } }
+                            if (heOnly) "\n[תמונה #$k]" else "\n[תמונה / фото #$k]"
+                        }),
                     place(f, heOnly).ifEmpty { "—" },
                     done(f, store, heOnly).ifEmpty { "—" }
                 )
@@ -403,6 +442,37 @@ object PeriodExport {
                 drawRow(cells, false)
             }
         }
+        }
+        // Фото — в конце отчёта, по номерам из таблицы
+        if (photoRefs.isNotEmpty()) {
+            newPage(false)
+            val ph = layout(if (heOnly) "תמונות" else "תמונות / Фото", titlePaint, content, align)
+            drawLayout(ph, margin.toFloat()); y += ph.height + 8
+            val colW = (content - 10) / 2f
+            val maxH = 300f
+            for ((k, f, pn) in photoRefs) {
+                val cap = layout("#$k · " + (if (f.address.isNotEmpty()) f.address + " · " else "") + problem(f, heOnly) +
+                    "\n" + pn + (place(f, heOnly).let { if (it.isEmpty()) "" else " · $it" }) +
+                    done(f, store, heOnly).let { if (it.isEmpty()) "" else "\n💬 $it" },
+                    TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10f; color = Color.BLACK }, content, align)
+                if (y + cap.height + 120 > bottom) newPage(false)
+                y += 6
+                drawLayout(cap, margin.toFloat()); y += cap.height + 4
+                val pics = store.photos(f.id).mapNotNull { loadPhoto(it.path, 700) }
+                var col = 0; var rowH = 0f
+                for (b in pics) {
+                    var w = colW; var h = w * b.height / b.width
+                    if (h > maxH) { h = maxH; w = h * b.width / b.height }
+                    if (col == 0 && y + h > bottom) newPage(false)
+                    val x = if (heOnly) margin + content - (col + 1) * colW - col * 10f + (colW - w) else margin + col * (colW + 10f)
+                    page!!.canvas.drawBitmap(b, null, android.graphics.RectF(x, y, x + w, y + h), null)
+                    rowH = maxOf(rowH, h)
+                    b.recycle()
+                    col++
+                    if (col == 2) { y += rowH + 8; col = 0; rowH = 0f }
+                }
+                if (col != 0) y += rowH + 8
+            }
         }
         // подписи
         val sign = layout(if (heOnly) "חתימת הטכנאי: ____________        נציג הלקוח: ____________" else "חתימת הטכנאי / Подпись техника: __________     נציג הלקוח / Представитель клиента: __________", metaPaint, content, align)

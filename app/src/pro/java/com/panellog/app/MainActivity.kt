@@ -743,7 +743,26 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             strip.addView(iv, LinearLayout.LayoutParams(dp(96), dp(96)).apply { marginStart = dp(6) })
         }
         box.addView(HorizontalScrollView(this).apply { addView(strip) })
+        // Отправить эту ошибку: полное описание + все её фото (WhatsApp и т.п.)
+        box.addView(btn(I18n.t("sendFault")) { saveCommentIfAny(); sendFault(f.id) }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply { topMargin = dp(12); bottomMargin = dp(24) }
+        })
         return sv
+    }
+
+    private fun sendFault(fid: String) {
+        val f = store.fault(fid) ?: return
+        val site = store.site(f.siteId)?.name ?: ""
+        val pn = store.panel(f.panelId)?.name ?: ""
+        val text = PeriodExport.faultMessage(f, site, pn, store, I18n.he)
+        val uris = ArrayList(store.photos(f.id).map { FileProvider.getUriForFile(this, "$packageName.files", File(it.path)) })
+        val i = when (uris.size) {
+            0 -> Intent(Intent.ACTION_SEND).setType("text/plain")
+            1 -> Intent(Intent.ACTION_SEND).setType("image/jpeg").putExtra(Intent.EXTRA_STREAM, uris[0])
+            else -> Intent(Intent.ACTION_SEND_MULTIPLE).setType("image/jpeg").putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+        }
+        i.putExtra(Intent.EXTRA_TEXT, text).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try { startActivity(Intent.createChooser(i, I18n.t("sendWith"))) } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
     }
 
     private fun saveCommentIfAny() {
