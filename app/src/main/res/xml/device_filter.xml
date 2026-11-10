@@ -6,6 +6,11 @@
     <usb-device vendor-id="1027" product-id="24597" />
     <!-- CH340 -->
     <usb-device vendor-id="6790" product-id="29987" />
+    <!-- CH341 -->
+    <usb-device vendor-id="6790" product-id="21795" />
+    <!-- CH343 / CH9102 (часто в дешёвых USB-RS232/485, напр. UTS-T02) -->
+    <usb-device vendor-id="6790" product-id="21971" />
+    <usb-device vendor-id="6790" product-id="21972" />
     <!-- CP2102 -->
     <usb-device vendor-id="4292" product-id="60000" />
     <!-- PL2303 -->
