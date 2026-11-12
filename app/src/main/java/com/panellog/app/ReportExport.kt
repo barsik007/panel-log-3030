@@ -201,6 +201,89 @@ object PeriodExport {
         b
     } catch (_: Exception) { null }
 
+    private fun xe(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        .replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]"), "")
+
+    /** Отчёт в Excel (.xlsx, без библиотек): активные ошибки с комментариями, лист справа налево, фильтр по столбцам. */
+    fun xlsx(r: PeriodReport, store: Store, out: File) {
+        val head = listOf("#", "רכזת", "כתובת", "אזור", "סוג", "תקלה", "מיקום", "סיבה / הערה")
+        val widths = listOf(5, 12, 12, 8, 22, 26, 38, 45)
+        val rows = ArrayList<List<String>>()
+        var n = 0
+        for (ps in r.panels) for (f in openOf(ps)) {
+            n++
+            rows.add(listOf(n.toString(), ps.panel.name, f.address, f.zone, type(f, true),
+                problem(f, true) + tags(f, ps, true).let { if (it.isEmpty()) "" else " · $it" },
+                place(f, true), done(f, store, true)))
+        }
+        fun cell(col: Int, row: Int, v: String, style: Int): String {
+            val ref = ('A' + col).toString() + row
+            return if (col == 0 && row > 3) "<c r=\"$ref\" s=\"$style\"><v>$v</v></c>"
+                else "<c r=\"$ref\" s=\"$style\" t=\"inlineStr\"><is><t xml:space=\"preserve\">${xe(v)}</t></is></c>"
+        }
+        val sb = StringBuilder()
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+        sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
+        sb.append("<sheetViews><sheetView rightToLeft=\"1\" workbookViewId=\"0\"><pane ySplit=\"3\" topLeftCell=\"A4\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>")
+        sb.append("<cols>")
+        widths.forEachIndexed { i, w -> sb.append("<col min=\"${i + 1}\" max=\"${i + 1}\" width=\"$w\" customWidth=\"1\"/>") }
+        sb.append("</cols><sheetData>")
+        sb.append("<row r=\"1\">").append(cell(0, 1, "דוח תקלות רכזת — " + r.site.name, 1)).append("</row>")
+        sb.append("<row r=\"2\">").append(cell(0, 2, "תאריך: " + d(r.to) + "   תקלות פעילות: " + rows.size, 0)).append("</row>")
+        sb.append("<row r=\"3\">")
+        head.forEachIndexed { i, h -> sb.append(cell(i, 3, h, 2)) }
+        sb.append("</row>")
+        rows.forEachIndexed { k, row ->
+            sb.append("<row r=\"${k + 4}\">")
+            row.forEachIndexed { i, v -> sb.append(cell(i, k + 4, v, 3)) }
+            sb.append("</row>")
+        }
+        sb.append("</sheetData>")
+        sb.append("<autoFilter ref=\"A3:H${maxOf(3, rows.size + 3)}\"/>")
+        sb.append("<pageMargins left=\"0.4\" right=\"0.4\" top=\"0.5\" bottom=\"0.5\" header=\"0.3\" footer=\"0.3\"/>")
+        sb.append("<pageSetup paperSize=\"9\" orientation=\"landscape\" fitToHeight=\"0\"/>")
+        sb.append("</worksheet>")
+
+        val x = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        val files = linkedMapOf(
+            "[Content_Types].xml" to x + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+                "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+                "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
+                "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
+                "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" +
+                "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>",
+            "_rels/.rels" to x + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+                "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>",
+            "xl/workbook.xml" to x + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
+                "<sheets><sheet name=\"תקלות\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>",
+            "xl/_rels/workbook.xml.rels" to x + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+                "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
+                "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>",
+            // стили: 0 обычный · 1 заголовок отчёта · 2 шапка таблицы · 3 ячейка с рамкой и переносом
+            "xl/styles.xml" to x + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+                "<fonts count=\"3\"><font><sz val=\"11\"/><name val=\"Arial\"/></font>" +
+                "<font><b/><sz val=\"14\"/><name val=\"Arial\"/></font><font><b/><sz val=\"11\"/><name val=\"Arial\"/></font></fonts>" +
+                "<fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" +
+                "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFE6E6E6\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>" +
+                "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>" +
+                "<border><left style=\"thin\"><color auto=\"1\"/></left><right style=\"thin\"><color auto=\"1\"/></right>" +
+                "<top style=\"thin\"><color auto=\"1\"/></top><bottom style=\"thin\"><color auto=\"1\"/></bottom><diagonal/></border></borders>" +
+                "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" +
+                "<cellXfs count=\"4\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" +
+                "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>" +
+                "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf>" +
+                "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"top\" wrapText=\"1\"/></xf></cellXfs>" +
+                "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>" +
+                "</styleSheet>",
+            "xl/worksheets/sheet1.xml" to sb.toString()
+        )
+        java.util.zip.ZipOutputStream(FileOutputStream(out)).use { z ->
+            for ((name, body) in files) {
+                z.putNextEntry(java.util.zip.ZipEntry(name)); z.write(body.toByteArray(Charsets.UTF_8)); z.closeEntry()
+            }
+        }
+    }
+
     /** Полное описание одной ошибки — для отправки в WhatsApp вместе с фото. */
     fun faultMessage(f: Fault, siteName: String, panelName: String, store: Store, heOnly: Boolean): String {
         val sb = StringBuilder()

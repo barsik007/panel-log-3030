@@ -1491,7 +1491,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (!I18n.he) AutoTr.request(store.faults(sid).flatMap { listOf(it.label, it.label2, it.node, it.problem) })
         val r = store.period(sid, panelId, fromFor) ?: run { toast(I18n.t("noLogsForReport")); return }
         // Иврит в настройках — только иврит; русский — выбор: иврит или иврит + перевод
-        val opts = listOf("waHe" to true, "pdfHe" to true, "pdfPhHe" to true, "saveHe" to true)   // только иврит
+        val opts = listOf("waHe" to true, "pdfHe" to true, "pdfPhHe" to true, "xlsHe" to true, "saveHe" to true, "xlsSave" to true)   // только иврит
         // + «Проделанная работа» — для себя (устранённое), начальнику не отправляется
         val workItems = listOf(I18n.t("workSave"), I18n.t("workShare"))
         val labels = opts.map { I18n.t(it.first) } + workItems + (if (withOther) listOf(I18n.t("otherPeriod")) else emptyList())
@@ -1511,6 +1511,12 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 val (key, heOnly) = opts[w]
                 when {
                     key.startsWith("wa") -> shareWhatsapp(PeriodExport.whatsapp(r, store, heOnly))
+                    key.startsWith("xls") -> try {
+                        val mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        val out = File(store.dataDir(), reportName(r, true).replace("_he.pdf", ".xlsx"))
+                        PeriodExport.xlsx(r, store, out)
+                        if (key == "xlsHe") shareFile(out, mime) else saveToDownloads(out, out.name, mime)
+                    } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
                     key.startsWith("pdfPh") -> makeReportPdf(r, heOnly, photos = true)?.let { shareFile(it, "application/pdf") }
                     key.startsWith("pdf") -> makeReportPdf(r, heOnly)?.let { shareFile(it, "application/pdf") }
                     else -> makeReportPdf(r, heOnly)?.let { saveToDownloads(it, it.name, "application/pdf") }

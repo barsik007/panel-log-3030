@@ -186,6 +186,8 @@ object I18n {
         "waRu" to ("WhatsApp — иврит + русский" to "וואטסאפ — עברית + רוסית"),
         "pdfHe" to ("PDF" to "PDF"),
         "pdfRu" to ("PDF — иврит + русский" to "PDF — עברית + רוסית"),
+        "xlsHe" to ("📊 Excel" to "📊 Excel"),
+        "xlsSave" to ("Скачать Excel на телефон" to "שמור Excel בטלפון"),
         "pdfPhHe" to ("📷 PDF с фото" to "📷 PDF עם תמונות"),
         "pdfPhRu" to ("📷 PDF с фото — иврит + русский" to "📷 PDF עם תמונות — עברית + רוסית"),
         "saveHe" to ("Скачать PDF на телефон" to "שמור PDF בטלפון"),
