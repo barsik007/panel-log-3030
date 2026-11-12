@@ -1154,6 +1154,9 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val pName = store.panels(s.id).associate { it.id to it.name }
         val recs = store.records(s.id)
         if (recs.isEmpty()) box.addView(tv(I18n.t("recEmpty"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
+        else box.addView(btn(I18n.t("recShareAll")) { shareRecG1h(recs) }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(8); bottomMargin = dp(6) }
+        })
         for (r in recs) {
             val c = card().apply { background = rounded(Color.rgb(255, 244, 240), 12, Color.rgb(240, 200, 190)) }
             c.addView(tv(pName[r.panelId] ?: "", 12f, true, Color.rgb(179, 38, 30)))
@@ -1267,13 +1270,14 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             catch (_: Exception) { emptyList() }
         val ev = RecordExport.select(all, if (r.kind == "history") histLimit() else 0)
         // отчёты и отправки — только на иврите
-        val items = listOf("recView", "waHe", "pdfHe", "xlsHe", "saveHe", "xlsSave", "logFile", "deleteLog")
+        val items = listOf("recView", "shareTech", "waHe", "pdfHe", "xlsHe", "saveHe", "xlsSave", "logFile", "deleteLog")
         AlertDialog.Builder(this).setTitle(RecordExport.title(r.kind, I18n.he) + " · " + fmt(r.ts))
             .setItems(items.map { I18n.t(it) }.toTypedArray()) { _, w ->
                 val key = items[w]
                 val he = true
                 when {
                     key == "recView" -> openRecord(r)
+                    key == "shareTech" -> shareRecG1h(listOf(r))
                     key == "logFile" -> shareLogFile(r.asLog())
                     key == "deleteLog" -> AlertDialog.Builder(this).setMessage(I18n.t("deleteLog") + "?")
                         .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteRecord(r); render() }
@@ -1414,11 +1418,20 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         if (uris.isEmpty()) return
         setIntent(Intent(this, MainActivity::class.java)) // не импортировать повторно при пересоздании
         val packs = ArrayList<List<G1h>>()
+        val recPacks = ArrayList<List<G1Rec>>()
         for (u in uris) {
             try {
                 val text = contentResolver.openInputStream(u)?.use { it.readBytes() }?.toString(Charsets.UTF_8) ?: continue
                 val j = org.json.JSONObject(text)
                 if (!j.has("g1h")) continue
+                j.optJSONArray("records")?.let { ra ->
+                    val rp = (0 until ra.length()).mapNotNull { k -> ra.optJSONObject(k) }.map { o ->
+                        G1Rec(j.optString("site"), j.optString("address"), o.optString("panel"), o.optString("detected"),
+                            o.optString("kind", "history"), o.optLong("ts"), o.optInt("events"),
+                            android.util.Base64.decode(o.getString("raw"), android.util.Base64.DEFAULT))
+                    }
+                    if (rp.isNotEmpty()) recPacks.add(rp)
+                }
                 val site = j.optString("site"); val addr = j.optString("address")
                 val who = j.optString("who").ifBlank { I18n.t("techDefault") }
                 fun item(o: org.json.JSONObject) = G1h(site, addr, o.optString("panel"), o.optString("detected"),
@@ -1431,8 +1444,89 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 if (pack.isNotEmpty()) packs.add(if (sn != null && sn.length() > 0) listOf(pack[0].copy(siteNotes = sn)) + pack.drop(1) else pack)
             } catch (_: Exception) { }
         }
-        if (packs.isEmpty()) { toast(I18n.t("notG1")); return }
-        importPack(packs, 0)
+        if (packs.isEmpty() && recPacks.isEmpty()) { toast(I18n.t("notG1")); return }
+        importRecPack(recPacks, 0) { importPack(packs, 0) }
+    }
+
+    // ---- тревоги / история от другого техника
+
+    private data class G1Rec(val site: String, val address: String, val panel: String, val detected: String,
+                             val kind: String, val ts: Long, val events: Int, val raw: ByteArray)
+
+    private fun recIcon(kind: String) = if (kind == "alarms") "🔥 " else "📜 "
+
+    /** Тревоги / история → файл .g1h для другого техника (один файл на объект). */
+    private fun shareRecG1h(list: List<RecordRec>) {
+        try {
+            val files = ArrayList<File>()
+            for ((sid, recs) in list.groupBy { it.siteId }) {
+                val s = store.site(sid) ?: continue
+                val j = org.json.JSONObject()
+                j.put("g1h", 2); j.put("app", appVersion()); j.put("site", s.name); j.put("address", s.address)
+                val arr = org.json.JSONArray()
+                for (r in recs) {
+                    val p = store.panel(r.panelId)
+                    arr.put(org.json.JSONObject().put("kind", r.kind).put("panel", p?.name ?: "").put("detected", p?.detected ?: "")
+                        .put("ts", r.ts).put("events", r.events)
+                        .put("raw", android.util.Base64.encodeToString(File(r.raw).readBytes(), android.util.Base64.NO_WRAP)))
+                }
+                j.put("records", arr)
+                val safe = s.name.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(30)
+                val dir = File(store.dataDir(), "share").also { it.mkdirs() }
+                val what = if (recs.size == 1) recs[0].kind else "records"
+                val f = File(dir, "G1_${safe}_${what}_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(recs.maxOf { it.ts })) + ".g1h")
+                f.writeText(j.toString()); files.add(f)
+            }
+            if (files.isEmpty()) return
+            val uris = ArrayList(files.map { FileProvider.getUriForFile(this, "$packageName.files", it) })
+            val send = if (uris.size == 1) Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+                else Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            send.type = "application/octet-stream"
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(send, I18n.t("sendWith")))
+        } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
+    }
+
+    private fun importRecPack(packs: List<List<G1Rec>>, k: Int, done: () -> Unit) {
+        if (k >= packs.size) { done(); return }
+        val pack = packs[k]
+        val next: () -> Unit = { mainHandler.post { importRecPack(packs, k + 1, done) } }
+        val lines = pack.joinToString("\n") {
+            "• " + recIcon(it.kind) + RecordExport.title(it.kind, I18n.he) + " — " + I18n.f("importPanelLine", it.panel, fmt(it.ts), it.events).removePrefix("• ")
+        }
+        AlertDialog.Builder(this)
+            .setMessage(I18n.f("importRecQ", pack[0].site, lines))
+            .setPositiveButton(I18n.t("importAdd")) { _, _ ->
+                val sites = store.sites()
+                val same = sites.firstOrNull { it.name.trim().equals(pack[0].site.trim(), ignoreCase = true) }
+                if (same != null) { importRecs(same.id, pack); next() }
+                else AlertDialog.Builder(this).setTitle(I18n.t("importSite"))
+                    .setItems((listOf(I18n.f("newSiteNamed", pack[0].site)) + sites.map { it.name }).toTypedArray()) { _, w ->
+                        importRecs(if (w == 0) store.addSite(pack[0].site.ifBlank { "G1" }, pack[0].address, "") else sites[w - 1].id, pack)
+                        next()
+                    }
+                    .setOnCancelListener { next() }.show()
+            }
+            .setNegativeButton(I18n.t("cancel")) { _, _ -> next() }
+            .setCancelable(false).show()
+    }
+
+    private fun importRecs(sid: String, pack: List<G1Rec>) {
+        var added = 0; var dup = 0
+        for (g in pack) {
+            val panels = store.panels(sid)
+            val p = panels.firstOrNull { g.detected.isNotEmpty() && it.detected == g.detected }
+                ?: panels.firstOrNull { it.name.trim() == g.panel.trim() }
+                ?: (if (panels.size == 1) panels[0] else null)
+            val pid = p?.id ?: store.addPanel(sid, g.panel.ifBlank { "רכזת " + (panels.size + 1) })
+            val exists = store.records(sid).any { r ->
+                r.kind == g.kind && try { File(r.raw).readBytes().contentEquals(g.raw) } catch (_: Exception) { false }
+            }
+            if (exists) dup++ else { store.addRecord(sid, pid, g.kind, g.raw, g.ts); added++ }
+        }
+        siteId = sid; prefs().edit().putString("lastSiteId", sid).apply()
+        go(Scr.RECLIST)
+        toast(I18n.f("importRecDone", added) + (if (dup > 0) " · " + I18n.f("importRecDup", dup) else ""))
     }
 
     /** Один файл = один объект: одно подтверждение на все панели внутри. */

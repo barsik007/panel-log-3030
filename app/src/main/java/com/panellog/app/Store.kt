@@ -124,8 +124,8 @@ class Store(private val ctx: Context) : SQLiteOpenHelper(ctx, "g1.db", null, 6) 
 
     private val RECORDS_SQL = "CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, site_id TEXT, panel_id TEXT, kind TEXT, ts INTEGER, raw TEXT, events INTEGER)"
 
-    fun addRecord(siteId: String, panelId: String, kind: String, raw: ByteArray): RecordRec {
-        val id = uuid(); val ts = now()
+    fun addRecord(siteId: String, panelId: String, kind: String, raw: ByteArray, tsIn: Long = 0L): RecordRec {
+        val id = uuid(); val ts = if (tsIn > 0) tsIn else now()
         val f = File(rawDir(), "rec_${kind}_$id.bin"); f.writeBytes(raw)
         val d = PanelDecoder.decode(raw)
         val n = if (d.graphic) PanelDecoder.parse(d.visualLines).size else 0
