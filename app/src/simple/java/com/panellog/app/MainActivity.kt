@@ -95,7 +95,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         "noEvents" to ("Нет разобранных событий — сначала снимите лог с панели" to "אין אירועים — קודם קרא נתונים מהרכזת"),
         "sendTitle" to ("Отправить" to "שליחה"),
         "saveTitle" to ("Сохранить на телефон" to "שמירה בטלפון"),
-        "waHe" to ("WhatsApp" to "וואטסאפ"),
+        "waHe" to ("💬 Списком в WhatsApp" to "💬 כרשימה בוואטסאפ"),
         "waRu" to ("WhatsApp — иврит + русский" to "וואטסאפ — עברית + רוסית"),
         "pdfHe" to ("PDF" to "PDF"),
         "pdfRu" to ("PDF — иврит + русский" to "PDF — עברית + רוסית"),

@@ -197,7 +197,7 @@ object I18n {
         "sinceLast" to ("С прошлого лога" to "מאז הקריאה הקודמת"),
         "sinceDate" to ("С даты…" to "מתאריך…"),
         "allTime" to ("За всё время" to "מתחילת הרישום"),
-        "waHe" to ("WhatsApp" to "וואטסאפ"),
+        "waHe" to ("💬 Списком в WhatsApp" to "💬 כרשימה בוואטסאפ"),
         "waRu" to ("WhatsApp — иврит + русский" to "וואטסאפ — עברית + רוסית"),
         "pdfHe" to ("PDF" to "PDF"),
         "pdfRu" to ("PDF — иврит + русский" to "PDF — עברית + רוסית"),
