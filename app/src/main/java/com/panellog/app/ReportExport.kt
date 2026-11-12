@@ -182,40 +182,13 @@ object ReportExport {
 }
 
 /** Отчёт за период по объекту: WhatsApp и PDF. heOnly — только иврит, иначе иврит + перевод. */
-object PeriodExport {
-    /** Фото для PDF: уменьшенное, с учётом поворота камеры (EXIF). */
-    private fun loadPhoto(path: String, maxPx: Int): android.graphics.Bitmap? = try {
-        val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        android.graphics.BitmapFactory.decodeFile(path, o)
-        var sz = 1
-        while (maxOf(o.outWidth, o.outHeight) / (sz * 2) >= maxPx) sz *= 2
-        var b = android.graphics.BitmapFactory.decodeFile(path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sz })
-        val rot = when (android.media.ExifInterface(path).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
-            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-            else -> 0f
-        }
-        if (b != null && rot != 0f) b = android.graphics.Bitmap.createBitmap(b, 0, 0, b.width, b.height,
-            android.graphics.Matrix().apply { postRotate(rot) }, true)
-        b
-    } catch (_: Exception) { null }
-
+/** Минимальный .xlsx без библиотек: лист справа налево, закреплённая шапка, фильтр по столбцам. */
+object Xlsx {
     private fun xe(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         .replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]"), "")
 
-    /** Отчёт в Excel (.xlsx, без библиотек): активные ошибки с комментариями, лист справа налево, фильтр по столбцам. */
-    fun xlsx(r: PeriodReport, store: Store, out: File) {
-        val head = listOf("#", "רכזת", "כתובת", "אזור", "סוג", "תקלה", "מיקום", "סיבה / הערה")
-        val widths = listOf(5, 12, 12, 8, 22, 26, 38, 45)
-        val rows = ArrayList<List<String>>()
-        var n = 0
-        for (ps in r.panels) for (f in openOf(ps)) {
-            n++
-            rows.add(listOf(n.toString(), ps.panel.name, f.address, f.zone, type(f, true),
-                problem(f, true) + tags(f, ps, true).let { if (it.isEmpty()) "" else " · $it" },
-                place(f, true), done(f, store, true)))
-        }
+    /** Первый столбец rows — номер (число). */
+    fun write(out: File, sheet: String, title: String, sub: String, head: List<String>, widths: List<Int>, rows: List<List<String>>) {
         fun cell(col: Int, row: Int, v: String, style: Int): String {
             val ref = ('A' + col).toString() + row
             return if (col == 0 && row > 3) "<c r=\"$ref\" s=\"$style\"><v>$v</v></c>"
@@ -228,8 +201,8 @@ object PeriodExport {
         sb.append("<cols>")
         widths.forEachIndexed { i, w -> sb.append("<col min=\"${i + 1}\" max=\"${i + 1}\" width=\"$w\" customWidth=\"1\"/>") }
         sb.append("</cols><sheetData>")
-        sb.append("<row r=\"1\">").append(cell(0, 1, "דוח תקלות רכזת — " + r.site.name, 1)).append("</row>")
-        sb.append("<row r=\"2\">").append(cell(0, 2, "תאריך: " + d(r.to) + "   תקלות פעילות: " + rows.size, 0)).append("</row>")
+        sb.append("<row r=\"1\">").append(cell(0, 1, title, 1)).append("</row>")
+        sb.append("<row r=\"2\">").append(cell(0, 2, sub, 0)).append("</row>")
         sb.append("<row r=\"3\">")
         head.forEachIndexed { i, h -> sb.append(cell(i, 3, h, 2)) }
         sb.append("</row>")
@@ -239,7 +212,7 @@ object PeriodExport {
             sb.append("</row>")
         }
         sb.append("</sheetData>")
-        sb.append("<autoFilter ref=\"A3:H${maxOf(3, rows.size + 3)}\"/>")
+        sb.append("<autoFilter ref=\"A3:${'A' + (head.size - 1)}${maxOf(3, rows.size + 3)}\"/>")
         sb.append("<pageMargins left=\"0.4\" right=\"0.4\" top=\"0.5\" bottom=\"0.5\" header=\"0.3\" footer=\"0.3\"/>")
         sb.append("<pageSetup paperSize=\"9\" orientation=\"landscape\" fitToHeight=\"0\"/>")
         sb.append("</worksheet>")
@@ -255,7 +228,7 @@ object PeriodExport {
             "_rels/.rels" to x + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
                 "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>",
             "xl/workbook.xml" to x + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
-                "<sheets><sheet name=\"תקלות\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>",
+                "<sheets><sheet name=\"${xe(sheet)}\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>",
             "xl/_rels/workbook.xml.rels" to x + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
                 "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
                 "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>",
@@ -282,6 +255,40 @@ object PeriodExport {
                 z.putNextEntry(java.util.zip.ZipEntry(name)); z.write(body.toByteArray(Charsets.UTF_8)); z.closeEntry()
             }
         }
+    }
+}
+
+object PeriodExport {
+    /** Фото для PDF: уменьшенное, с учётом поворота камеры (EXIF). */
+    private fun loadPhoto(path: String, maxPx: Int): android.graphics.Bitmap? = try {
+        val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(path, o)
+        var sz = 1
+        while (maxOf(o.outWidth, o.outHeight) / (sz * 2) >= maxPx) sz *= 2
+        var b = android.graphics.BitmapFactory.decodeFile(path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sz })
+        val rot = when (android.media.ExifInterface(path).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
+            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (b != null && rot != 0f) b = android.graphics.Bitmap.createBitmap(b, 0, 0, b.width, b.height,
+            android.graphics.Matrix().apply { postRotate(rot) }, true)
+        b
+    } catch (_: Exception) { null }
+
+    /** Отчёт в Excel: активные ошибки с комментариями. */
+    fun xlsx(r: PeriodReport, store: Store, out: File) {
+        val rows = ArrayList<List<String>>()
+        var n = 0
+        for (ps in r.panels) for (f in openOf(ps)) {
+            n++
+            rows.add(listOf(n.toString(), ps.panel.name, f.address, f.zone, type(f, true),
+                problem(f, true) + tags(f, ps, true).let { if (it.isEmpty()) "" else " · $it" },
+                place(f, true), done(f, store, true)))
+        }
+        Xlsx.write(out, "תקלות", "דוח תקלות רכזת — " + r.site.name, "תאריך: " + d(r.to) + "   תקלות פעילות: " + rows.size,
+            listOf("#", "רכזת", "כתובת", "אזור", "סוג", "תקלה", "מיקום", "סיבה / הערה"), listOf(5, 12, 12, 8, 22, 26, 38, 45), rows)
     }
 
     /** Полное описание одной ошибки — для отправки в WhatsApp вместе с фото. */
@@ -612,6 +619,17 @@ object RecordExport {
         sb.append("\n\n")
         events.forEachIndexed { i, e -> sb.append(i + 1).append(". ").append(block(e, he)).append("\n\n") }
         return sb.toString().trimEnd()
+    }
+
+    /** Тревоги / история в Excel (иврит). */
+    fun xlsx(events: List<PanelDecoder.PanelEvent>, kind: String, site: String, panel: String, total: Int, out: File) {
+        val rows = events.mapIndexed { i, e ->
+            listOf((i + 1).toString(), e.date, e.time, e.event.trim(), e.address, e.zone,
+                ReportExport.typeText(e, true), ReportExport.problemLine(e, true), ReportExport.place(e))
+        }
+        Xlsx.write(out, title(kind, true), title(kind, true) + " — " + site + (if (panel.isNotEmpty()) " · $panel" else ""),
+            "אירועים: " + events.size + (if (total > events.size) " (מתוך $total)" else ""),
+            listOf("#", "תאריך", "שעה", "אירוע", "כתובת", "אזור", "סוג", "תקלה", "מיקום"), listOf(5, 12, 10, 18, 12, 8, 22, 26, 40), rows)
     }
 
     fun pdf(events: List<PanelDecoder.PanelEvent>, kind: String, site: String, panel: String, he: Boolean, total: Int, out: File) {

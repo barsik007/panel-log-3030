@@ -1208,10 +1208,27 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             if (found.isEmpty()) toast(I18n.t("recNothing"))
             else shareWhatsapp(RecordExport.text(found.take(300), r.kind, s?.name ?: "", pn, true, recEvents.size))
         }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply { bottomMargin = dp(6) } })
+        box.addView(btn(I18n.t("recXlsFound")) {
+            val found = recFiltered()
+            if (found.isEmpty()) toast(I18n.t("recNothing")) else recXlsx(r, found, recEvents.size, true)
+        }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply { bottomMargin = dp(6) } })
         recList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         box.addView(recList)
         fillRecList()
         return sv
+    }
+
+    /** Тревоги / история → Excel: отправить или скачать. */
+    private fun recXlsx(r: RecordRec, events: List<PanelDecoder.PanelEvent>, total: Int, share: Boolean) {
+        try {
+            val site = store.site(r.siteId)?.name ?: ""
+            val pn = store.panel(r.panelId)?.name ?: ""
+            val mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            val safe = site.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(40)
+            val out = File(store.dataDir(), "G1_${safe}_${r.kind}_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(r.ts)) + ".xlsx")
+            RecordExport.xlsx(events, r.kind, site, pn, total, out)
+            if (share) shareFile(out, mime) else saveToDownloads(out, out.name, mime)
+        } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
     }
 
     private fun fillRecList() {
@@ -1250,7 +1267,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             catch (_: Exception) { emptyList() }
         val ev = RecordExport.select(all, if (r.kind == "history") histLimit() else 0)
         // отчёты и отправки — только на иврите
-        val items = listOf("recView", "waHe", "pdfHe", "saveHe", "logFile", "deleteLog")
+        val items = listOf("recView", "waHe", "pdfHe", "xlsHe", "saveHe", "xlsSave", "logFile", "deleteLog")
         AlertDialog.Builder(this).setTitle(RecordExport.title(r.kind, I18n.he) + " · " + fmt(r.ts))
             .setItems(items.map { I18n.t(it) }.toTypedArray()) { _, w ->
                 val key = items[w]
@@ -1262,6 +1279,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                         .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteRecord(r); render() }
                         .setNegativeButton(I18n.t("cancel"), null).show()
                     key.startsWith("wa") -> shareWhatsapp(RecordExport.text(ev, r.kind, s.name, pn, he, all.size))
+                    key.startsWith("xls") -> recXlsx(r, RecordExport.select(all, 0), all.size, key == "xlsHe")   // Excel — вся история
                     else -> try {
                         val safe = s.name.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(40)
                         val out = File(store.dataDir(), "G1_${safe}_${r.kind}_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(r.ts)) +
