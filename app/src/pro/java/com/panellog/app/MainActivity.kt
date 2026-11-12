@@ -1154,9 +1154,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         val pName = store.panels(s.id).associate { it.id to it.name }
         val recs = store.records(s.id)
         if (recs.isEmpty()) box.addView(tv(I18n.t("recEmpty"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
-        else box.addView(btn(I18n.t("recShareAll")) { shareRecG1h(recs) }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(8); bottomMargin = dp(6) }
-        })
         for (r in recs) {
             val c = card().apply { background = rounded(Color.rgb(255, 244, 240), 12, Color.rgb(240, 200, 190)) }
             c.addView(tv(pName[r.panelId] ?: "", 12f, true, Color.rgb(179, 38, 30)))
@@ -1214,6 +1211,15 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         box.addView(btn(I18n.t("recXlsFound")) {
             val found = recFiltered()
             if (found.isEmpty()) toast(I18n.t("recNothing")) else recXlsx(r, found, recEvents.size, true)
+        }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply { bottomMargin = dp(6) } })
+        box.addView(btn(I18n.t("recPdfFound")) {
+            val found = recFiltered()
+            if (found.isEmpty()) toast(I18n.t("recNothing")) else try {
+                val safe = (s?.name ?: "").replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").trim('_').take(40)
+                val out = File(store.dataDir(), "G1_${safe}_${r.kind}_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(r.ts)) + "_he.pdf")
+                RecordExport.pdf(found, r.kind, s?.name ?: "", pn, true, recEvents.size, out)
+                shareFile(out, "application/pdf")
+            } catch (e: Exception) { toast(I18n.t("fileErr") + e.message) }
         }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply { bottomMargin = dp(6) } })
         recList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         box.addView(recList)
