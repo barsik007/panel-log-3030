@@ -71,7 +71,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         private val BAUDS = intArrayOf(300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200)
     }
 
-    private enum class Scr { HOME, SITE, CAPTURE, FAULT, LOGS, PAPER }
+    private enum class Scr { HOME, SITE, CAPTURE, FAULT, LOGS, PAPER, RECORD }
 
     private lateinit var store: Store
     private lateinit var usbManager: UsbManager
@@ -92,6 +92,13 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
     private var captureKind = "faults"
     private var searchText = ""
     private var paperText = ""
+    // экран тревог / истории с поиском
+    private var recRec: RecordRec? = null
+    private var recEvents: List<PanelDecoder.PanelEvent> = emptyList()
+    private var recHay: List<String> = emptyList()
+    private var recQuery = ""
+    private var recList: LinearLayout? = null
+    private var recCount: TextView? = null
 
     // USB / снятие лога
     private var port: UsbSerialPort? = null
@@ -201,6 +208,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             Scr.FAULT -> { saveCommentIfAny(); go(Scr.SITE) }
             Scr.LOGS -> go(Scr.SITE)
             Scr.PAPER -> go(Scr.LOGS)
+            Scr.RECORD -> go(Scr.LOGS)
         }
     }
 
@@ -220,6 +228,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             Scr.FAULT -> faultView()
             Scr.LOGS -> logsView()
             Scr.PAPER -> paperView()
+            Scr.RECORD -> recordView()
         }
         if (scr != Scr.SITE) { selMode = false; selected.clear() }
         setContentView(if (scr == Scr.SITE && selMode) withSelBar(v) else v)
@@ -932,7 +941,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             go(Scr.SITE)
             AlertDialog.Builder(this)
                 .setMessage(I18n.f("recSaved", RecordExport.title(r.kind, I18n.he), r.events))
-                .setPositiveButton(I18n.t("recOpen")) { _, _ -> recordMenu(r) }
+                .setPositiveButton(I18n.t("recOpen")) { _, _ -> openRecord(r) }
                 .setNegativeButton(I18n.t("close"), null).show()
             return
         }
@@ -1144,6 +1153,82 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         return sv
     }
 
+    /** Открыть тревоги / историю на экране с поиском (ищет по ВСЕМ событиям, не только по последним). */
+    private fun openRecord(r: RecordRec) {
+        val all = try { PanelDecoder.decode(File(r.raw).readBytes()).let { d -> if (d.graphic) PanelDecoder.parse(d.visualLines) else emptyList() } }
+            catch (_: Exception) { emptyList() }
+        recRec = r
+        recEvents = RecordExport.select(all, 0)   // новые сверху
+        recHay = recEvents.map { e ->
+            listOf(e.date, e.time, e.event, e.problem, e.address, e.zone, e.zoneLabel, e.label, e.label2, e.devType, e.node,
+                PanelDecoder.ru(e.problem) ?: "", PanelDecoder.ru(e.event.trim()) ?: "").joinToString(" ").lowercase()
+        }
+        recQuery = ""
+        go(Scr.RECORD)
+    }
+
+    private fun recFiltered(): List<PanelDecoder.PanelEvent> {
+        val words = recQuery.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return recEvents
+        return recEvents.filterIndexed { i, _ -> words.all { recHay[i].contains(it) } }
+    }
+
+    private fun recordView(): View {
+        val (sv, box) = page()
+        val r = recRec ?: return sv
+        val s = store.site(r.siteId)
+        val pn = store.panel(r.panelId)?.name ?: ""
+        box.addView(tv((if (r.kind == "alarms") "🔥 " else "📜 ") + RecordExport.title(r.kind, I18n.he), 20f, true))
+        box.addView(tv((s?.name ?: "") + (if (pn.isNotEmpty()) " · $pn" else "") + " · " + fmt(r.ts), 13f, color = Color.DKGRAY))
+        box.addView(input(I18n.t("recSearch"), recQuery).apply {
+            setSingleLine()
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(e: Editable?) { recQuery = e?.toString() ?: ""; fillRecList() }
+            })
+        })
+        recCount = tv("", 13f, color = Color.rgb(60, 66, 75)).apply { setPadding(0, dp(6), 0, dp(2)) }
+        box.addView(recCount)
+        box.addView(btn(I18n.t("recSendFound")) {
+            val found = recFiltered()
+            if (found.isEmpty()) toast(I18n.t("recNothing"))
+            else shareWhatsapp(RecordExport.text(found.take(300), r.kind, s?.name ?: "", pn, true, recEvents.size))
+        }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply { bottomMargin = dp(6) } })
+        recList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(recList)
+        fillRecList()
+        return sv
+    }
+
+    private fun fillRecList() {
+        val list = recList ?: return
+        list.removeAllViews()
+        val r = recRec ?: return
+        val found = recFiltered()
+        val searching = recQuery.isNotBlank()
+        // без поиска: история — последние N (настройка), тревоги — все; на экране не больше 300 строк
+        val lim = if (!searching && r.kind == "history" && histLimit() > 0) histLimit() else 300
+        val shown = found.take(minOf(lim, 300))
+        recCount?.text = if (searching) I18n.f("recFound", found.size, recEvents.size) +
+                (if (found.size > shown.size) " · " + I18n.f("recShown", shown.size) else "")
+            else I18n.f("recTotal", recEvents.size) + (if (recEvents.size > shown.size) " · " + I18n.f("recShown", shown.size) else "")
+        if (shown.isEmpty()) { list.addView(tv(I18n.t("recNothing"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) }); return }
+        for (e in shown) {
+            val c = card()
+            val ev = e.event.trim()
+            c.addView(tv(e.date + "  " + e.time + (if (ev.isNotEmpty()) " · " + I18n.panel(ev) else ""), 13f, true, Color.rgb(179, 38, 30)))
+            val head = if (e.address.isNotEmpty()) e.address + (if (e.devType.isNotEmpty()) " · " + I18n.devType(e.devType) else "")
+                else I18n.t("system") + (if (e.node.isNotEmpty()) " · " + e.node else "")
+            c.addView(tv(head, 15f, true))
+            if (e.problem.isNotBlank()) c.addView(tv(I18n.panel(e.problem), 14f, true))
+            addPlace(c, if (e.address.isEmpty()) listOf() else listOf(e.label, e.label2), 15f)
+            if (e.zone.isNotEmpty() || e.zoneLabel.isNotBlank())
+                c.addView(tv(listOf(e.zone, e.zoneLabel.trim()).filter { it.isNotEmpty() }.joinToString(" · "), 12f, color = Color.DKGRAY))
+            list.addView(c)
+        }
+    }
+
     /** Тревоги / история: просмотр, отправка, PDF, файл для Claude, удаление. */
     private fun recordMenu(r: RecordRec) {
         val s = store.site(r.siteId) ?: return
@@ -1158,10 +1243,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
                 val key = items[w]
                 val he = true
                 when {
-                    key == "recView" -> {
-                        paperText = RecordExport.text(ev, r.kind, s.name, pn, I18n.he, all.size).replace("*", "")
-                        go(Scr.PAPER)
-                    }
+                    key == "recView" -> openRecord(r)
                     key == "logFile" -> shareLogFile(r.asLog())
                     key == "deleteLog" -> AlertDialog.Builder(this).setMessage(I18n.t("deleteLog") + "?")
                         .setPositiveButton(I18n.t("delete")) { _, _ -> store.deleteRecord(r); render() }
