@@ -71,7 +71,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         private val BAUDS = intArrayOf(300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200)
     }
 
-    private enum class Scr { HOME, SITE, CAPTURE, FAULT, LOGS, PAPER, RECORD }
+    private enum class Scr { HOME, SITE, CAPTURE, FAULT, LOGS, PAPER, RECORD, RECLIST }
 
     private lateinit var store: Store
     private lateinit var usbManager: UsbManager
@@ -208,7 +208,8 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             Scr.FAULT -> { saveCommentIfAny(); go(Scr.SITE) }
             Scr.LOGS -> go(Scr.SITE)
             Scr.PAPER -> go(Scr.LOGS)
-            Scr.RECORD -> go(Scr.LOGS)
+            Scr.RECORD -> go(Scr.RECLIST)
+            Scr.RECLIST -> go(Scr.SITE)
         }
     }
 
@@ -229,6 +230,7 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             Scr.LOGS -> logsView()
             Scr.PAPER -> paperView()
             Scr.RECORD -> recordView()
+            Scr.RECLIST -> recListView()
         }
         if (scr != Scr.SITE) { selMode = false; selected.clear() }
         setContentView(if (scr == Scr.SITE && selMode) withSelBar(v) else v)
@@ -405,6 +407,10 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             btn(I18n.t("report")) { sendMenu() },
             btn(I18n.t("logsClaude")) { go(Scr.LOGS) }
         ))
+        // тревоги и история — отдельная кнопка на экране объекта
+        box.addView(btn(I18n.t("recBtn") + store.records(s.id).size.let { if (it > 0) " · $it" else "" }) { go(Scr.RECLIST) }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48))
+        })
 
         val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
         val faults = store.faults(s.id).filter { panelSel == null || it.panelId == panelSel || it.panelId.isEmpty() }
@@ -1097,19 +1103,6 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
         box.addView(tv(I18n.t("logsTitle") + " · " + s.name, 20f, true))
         box.addView(tv(I18n.t("logsClaudeHint"), 13f, color = Color.DKGRAY).apply { setPadding(0, dp(4), 0, dp(4)) })
         val pName = store.panels(s.id).associate { it.id to it.name }
-        // тревоги и история — отдельным списком сверху
-        val recs = store.records(s.id).filter { panelSel == null || it.panelId == panelSel }
-        if (recs.isNotEmpty()) {
-            box.addView(tv(I18n.t("recTitle"), 16f, true).apply { setPadding(0, dp(10), 0, dp(4)) })
-            for (r in recs) {
-                val c = card().apply { background = rounded(Color.rgb(255, 244, 240), 12, Color.rgb(240, 200, 190)) }
-                c.addView(tv(pName[r.panelId] ?: "", 12f, true, Color.rgb(179, 38, 30)))
-                c.addView(tv((if (r.kind == "alarms") "🔥 " else "📜 ") + RecordExport.title(r.kind, I18n.he) + " · " + I18n.f("logLine", fmt(r.ts), r.events), 15f, true))
-                c.setOnClickListener { recordMenu(r) }
-                box.addView(c)
-            }
-            box.addView(tv(I18n.t("faultLogsTitle"), 16f, true).apply { setPadding(0, dp(12), 0, dp(4)) })
-        }
         val logs = store.logs(s.id).filter { panelSel == null || it.panelId == panelSel }
         if (logs.isEmpty()) box.addView(tv(I18n.t("noLogsYet"), 14f, color = Color.DKGRAY))
         for (l in logs) {
@@ -1150,6 +1143,26 @@ class MainActivity : Activity(), SerialInputOutputManager.Listener {
             setTextColor(Color.rgb(20, 230, 90)); setBackgroundColor(Color.BLACK)
             setPadding(dp(6), dp(6), dp(6), dp(6)); setTextIsSelectable(true)
         })
+        return sv
+    }
+
+    /** Список снятых тревог и историй объекта: нажатие — поиск, «⋮» — отправить / PDF / удалить. */
+    private fun recListView(): View {
+        val (sv, box) = page()
+        val s = store.site(siteId ?: return sv) ?: return sv
+        box.addView(tv(I18n.t("recTitle") + " · " + s.name, 20f, true))
+        val pName = store.panels(s.id).associate { it.id to it.name }
+        val recs = store.records(s.id)
+        if (recs.isEmpty()) box.addView(tv(I18n.t("recEmpty"), 14f, color = Color.DKGRAY).apply { setPadding(0, dp(12), 0, 0) })
+        for (r in recs) {
+            val c = card().apply { background = rounded(Color.rgb(255, 244, 240), 12, Color.rgb(240, 200, 190)) }
+            c.addView(tv(pName[r.panelId] ?: "", 12f, true, Color.rgb(179, 38, 30)))
+            c.addView(tv((if (r.kind == "alarms") "🔥 " else "📜 ") + RecordExport.title(r.kind, I18n.he) + " · " + I18n.f("logLine", fmt(r.ts), r.events), 15f, true))
+            c.addView(tv(I18n.t("recCardHint"), 12f, color = Color.DKGRAY))
+            c.setOnClickListener { openRecord(r) }
+            c.setOnLongClickListener { recordMenu(r); true }
+            box.addView(c)
+        }
         return sv
     }
 
